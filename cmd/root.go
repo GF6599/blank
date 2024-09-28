@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	gshred "gshred/app"
+
+	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{

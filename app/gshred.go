@@ -3,42 +3,68 @@ package app
 import (
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+
+	"go.uber.org/zap"
 )
+
+type file string
+type directory string
+
+type work struct {
+	files       []file
+	directories []directory
+}
+
+func (w *work) len() int {
+	return len(w.files) + len(w.directories)
+}
+
+var (
+	log      *zap.SugaredLogger
+	workload work
+)
+
+func init() {
+	logger := zap.Must(zap.NewDevelopment())
+	defer logger.Sync()
+	log = logger.Sugar()
+}
 
 // Expand the CLI args and find all the individual files.
 // The files will then be concurrently shredded.
 func Gshred(args []string) {
-	var toShred []string
+	// var toShred []string
 	for _, arg := range args {
-		id, err := isdir(arg)
+		isdir, err := isdir(arg)
 		if err != nil {
 			log.Fatalln("Provided path: ", arg, " is ill formed!")
 		}
-		if id {
-			paths, err := walk(arg)
-			if err != nil {
+		if isdir {
+			if err := walk(arg); err != nil {
 				log.Fatalln("Failed to walk the directory: ", arg)
 			}
-			toShred = append(toShred, paths...)
 		} else {
-			toShred = append(toShred, arg)
+			workload.files = append(workload.files, file(arg))
 		}
 	}
-	log.Printf("Number of files to shred: %d", len(toShred))
-	concurrentShred(toShred)
-	log.Printf("Shred finished!")
+	log.Infof("Number of files to shred: %d", workload.len())
+	concurrentShred(workload)
+	log.Info("gShred finished! All files and dir deleted.")
 }
 
 // Delete a directory by performing rm -rf command
-func shredDir(path string) error {
-	// TODO: Make this more secure?
-	log.Println("Deleting dir: ", path)
-	cmd := exec.Command("rm", "-rf", path)
+func shredDir(d directory) error {
+	// TODO:
+	// Make this more secure?
+	// Maybe mimic shred behaviour and rename the dir to len(dir_name) 0's
+	// and then reduce the length by 1 each rename until len(dir_name) is 1
+	// then remove the dir
+	log.Info("Deleting dir: ", d)
+	cmd := exec.Command("rm", "-rf", string(d))
 	if err := cmd.Run(); err != nil {
 		return err
 	}
@@ -46,8 +72,9 @@ func shredDir(path string) error {
 }
 
 // Shred a file by performing the shred command
-func shredFile(path string) error {
-	cmd := exec.Command("shred", "-uzfn", "10", path)
+func shredFile(f file) error {
+	log.Info("Shreding file: ", f)
+	cmd := exec.Command("shred", "-uzfn", "10", string(f))
 	if err := cmd.Run(); err != nil {
 		return err
 	}
@@ -57,7 +84,7 @@ func shredFile(path string) error {
 // Given a list of files to shred, perform the shred Command
 // on files concurrently, and then perform rm -rf on any
 // directories afterwards
-func concurrentShred(toShred []string) {
+func concurrentShred(workload work) {
 	// Channel for reporting the overall progress.
 	stats := make(chan string)
 	// Semaphore to limit the amount of concurrent shreding happening.
@@ -67,26 +94,17 @@ func concurrentShred(toShred []string) {
 	defer close(sema)
 	// Create waitgroup for all goroutines to finish
 	var wg sync.WaitGroup
-	// Slice to hold all the directorys, which cannot be deleted with the shred command
-	var dirToDelete []string
 	// Go routine to print out the overall progress.
 	go func() {
-		total := len(toShred)
 		var done int
-		for file := range stats {
+		for range stats {
 			done++
-			log.Println(file)
-			log.Printf("%.2f%%\n", (float64(done)/float64(total))*100)
+			log.Infof("%.2f%%\n", (float64(done)/float64(workload.len()))*100)
 		}
 	}()
 	// Loop over all the files and shred them concurrently.
-	for _, file := range toShred {
+	for _, file := range workload.files {
 		file := file
-		// Folders cannot be shreded and will be treated differently
-		if isdir, _ := isdir(file); isdir {
-			dirToDelete = append(dirToDelete, file)
-			continue
-		}
 		// Start a goroutine to shred the file
 		wg.Add(1)
 		go func() {
@@ -104,7 +122,7 @@ func concurrentShred(toShred []string) {
 	// Wait for all goroutine to finish
 	wg.Wait()
 	// Delete the folders after all files are shreded
-	for _, dir := range dirToDelete {
+	for _, dir := range workload.directories {
 		if err := shredDir(dir); err != nil {
 			log.Fatalln("Failed to delete dir: ", dir)
 		}
@@ -116,7 +134,7 @@ func concurrentShred(toShred []string) {
 func dirents(dir string) []fs.DirEntry {
 	files, err := os.ReadDir(string(dir))
 	if err != nil {
-		fmt.Println("Failed read dir contents: ", dir)
+		log.Warn("Failed read dir contents: ", dir)
 		return nil
 	}
 	return files
@@ -126,7 +144,7 @@ func dirents(dir string) []fs.DirEntry {
 func isdir(path string) (bool, error) {
 	f, err := os.Stat(path)
 	if err != nil {
-		fmt.Println("Failed to read path info!", err)
+		log.Warn("Failed to read path info!", err)
 		return false, err
 	}
 	if f.IsDir() {
@@ -137,27 +155,30 @@ func isdir(path string) (bool, error) {
 
 // Walk a directory and return all its files, which includes
 // contents in nested directories.
-func walk(dir string) ([]string, error) {
-	var result []string
+func walk(dir string) error {
+	workload.directories = append(workload.directories, directory(dir))
+	// Contents of the diectory to walk
 	de := dirents(dir)
+	// Loop over all contents in the given directory
 	for _, f := range de {
+		// Full file path
 		ff := filepath.Join(dir, f.Name())
-		d, err := isdir(ff)
+		// If a content is another directory, recursively walk the
+		// child directory.
+		isdir, err := isdir(ff)
 		if err != nil {
-			fmt.Println("Ignoring error on file: ", ff)
+			log.Warn("Ignoring error on file: ", ff)
 			continue
 		}
-		if d {
-			w, err := walk(ff)
-
-			if err != nil {
-				return nil, err
+		if isdir {
+			workload.directories = append(workload.directories, directory(ff))
+			if err := walk(ff); err != nil {
+				return err
 			}
-			result = append(result, w...)
 		} else {
-			result = append(result, ff)
+			// Not a directory, simply append its full path
+			workload.files = append(workload.files, file(ff))
 		}
 	}
-	result = append(result, dir)
-	return result, nil
+	return nil
 }
