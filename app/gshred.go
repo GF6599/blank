@@ -103,21 +103,21 @@ func concurrentShred(workload work) {
 		}
 	}()
 	// Loop over all the files and shred them concurrently.
-	for _, file := range workload.files {
-		file := file
+	for _, f := range workload.files {
+		f := f
 		// Start a goroutine to shred the file
 		wg.Add(1)
-		go func() {
+		go func(f file) {
 			sema <- struct{}{}
 			defer func() {
 				<-sema
-				stats <- fmt.Sprintf("File: %s", file)
+				stats <- fmt.Sprintf("File: %s", f)
 				wg.Done()
 			}()
-			if err := shredFile(file); err != nil {
-				log.Fatalln("Failed to shred file: ", file)
+			if err := shredFile(f); err != nil {
+				log.Fatalln("Failed to shred file: ", f)
 			}
-		}()
+		}(f)
 	}
 	// Wait for all goroutine to finish
 	wg.Wait()
