@@ -12,21 +12,8 @@ package main
 
 import (
 	"gshred/cmd"
-
-	"go.uber.org/zap"
 )
 
-var log *zap.SugaredLogger
-
-func init() {
-	logger := zap.Must(zap.NewDevelopment())
-	defer logger.Sync()
-	log = logger.Sugar()
-}
-
-// TODO:
-// Use global logger to avoid setup each time
 func main() {
-	log.Info("Hello from zap logger")
 	cmd.Execute()
 }
