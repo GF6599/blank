@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-
-	"go.uber.org/zap"
 )
 
 type file string
@@ -24,22 +22,20 @@ func (w *work) len() int {
 }
 
 var (
-	log      *zap.SugaredLogger
 	workload work
 )
-
-func init() {
-	logger := zap.Must(zap.NewDevelopment())
-	defer logger.Sync()
-	log = logger.Sugar()
-}
 
 // Expand the CLI args and find all the individual files.
 // The files will then be concurrently shredded.
 func Gshred(args []string) {
 	// var toShred []string
 	for _, arg := range args {
-		isdir, err := isdir(arg)
+		// Convert to absolute path
+		absolutePath, err := filepath.Abs(arg)
+		if err != nil {
+			log.Fatalln("Failed to find absolute path of file: ", arg, err)
+		}
+		isdir, err := isdir(absolutePath)
 		if err != nil {
 			log.Fatalln("Provided path: ", arg, " is ill formed!")
 		}
@@ -73,7 +69,6 @@ func shredDir(d directory) error {
 
 // Shred a file by performing the shred command
 func shredFile(f file) error {
-	log.Info("Shreding file: ", f)
 	cmd := exec.Command("shred", "-uzfn", "10", string(f))
 	if err := cmd.Run(); err != nil {
 		return err
@@ -85,7 +80,7 @@ func shredFile(f file) error {
 // on files concurrently, and then perform rm -rf on any
 // directories afterwards
 func concurrentShred(workload work) {
-	// Channel for reporting the overall progress.
+	// Channel for reporting which file is being operated on.
 	stats := make(chan string)
 	// Semaphore to limit the amount of concurrent shreding happening.
 	sema := make(chan struct{}, 100)
@@ -115,7 +110,8 @@ func concurrentShred(workload work) {
 				wg.Done()
 			}()
 			if err := shredFile(f); err != nil {
-				log.Fatalln("Failed to shred file: ", f)
+				stat, _ := os.Stat(string(f))
+				log.Fatalln("Failed to shred file: ", f, stat.Mode())
 			}
 		}(f)
 	}
@@ -134,7 +130,7 @@ func concurrentShred(workload work) {
 func dirents(dir string) []fs.DirEntry {
 	files, err := os.ReadDir(string(dir))
 	if err != nil {
-		log.Warn("Failed read dir contents: ", dir)
+		log.Warn("Failed to read dir contents: ", dir)
 		return nil
 	}
 	return files
@@ -142,9 +138,9 @@ func dirents(dir string) []fs.DirEntry {
 
 // Checks whether the given path is a dir.
 func isdir(path string) (bool, error) {
-	f, err := os.Stat(path)
+	f, err := os.Lstat(path)
 	if err != nil {
-		log.Warn("Failed to read path info!", err)
+		log.Warn("Failed to check isdir!", path, err)
 		return false, err
 	}
 	if f.IsDir() {
@@ -153,32 +149,65 @@ func isdir(path string) (bool, error) {
 	return false, nil
 }
 
+// Check if a given path is a symlink
+func isSymLink(path string) (bool, error) {
+	f, err := os.Lstat(path)
+	if err != nil {
+		log.Warn("Failed to check isSymLink!", path, err)
+		return false, err
+	}
+	if f.Mode()&os.ModeSymlink != 0 {
+		log.Warn("symlink found")
+		return true, nil
+	}
+	return false, nil
+}
+
 // Walk a directory and return all its files, which includes
-// contents in nested directories.
+// contents in nested directories. If a file or directory is
+// a symbolic link, it will automatically apply rm -rf and it
+// will not be part of the shred operation.
 func walk(dir string) error {
 	workload.directories = append(workload.directories, directory(dir))
 	// Contents of the diectory to walk
 	de := dirents(dir)
 	// Loop over all contents in the given directory
 	for _, f := range de {
-		// Full file path
-		ff := filepath.Join(dir, f.Name())
-		// If a content is another directory, recursively walk the
-		// child directory.
-		isdir, err := isdir(ff)
-		if err != nil {
-			log.Warn("Ignoring error on file: ", ff)
+		// Full relative path from executing dir
+		fp := filepath.Join(dir, f.Name())
+
+		var isDirectory bool
+		var isSymbolicLink bool
+		var err error
+
+		// Cannot shred a symlink. Use normal rm -rf instead
+		if isSymbolicLink, err = isSymLink(fp); err != nil {
+			log.Fatalf("Problem reading info on path: %s.", fp, err)
+		}
+		if isSymbolicLink {
+			log.Info("%s is a symbolic link, removing with 'rm -rf'...")
+			cmd := exec.Command("rm", "-rf", fp)
+			if err := cmd.Run(); err != nil {
+				log.Fatal("Faile to remove symbolic link:", fp)
+			}
 			continue
 		}
-		if isdir {
-			workload.directories = append(workload.directories, directory(ff))
-			if err := walk(ff); err != nil {
+
+		// Recursively walk the sub directory
+		if isDirectory, err = isdir(fp); err != nil {
+			log.Warn("Ignoring error and continue with dir walk.")
+			continue
+		}
+		if isDirectory {
+			workload.directories = append(workload.directories, directory(fp))
+			if err := walk(fp); err != nil {
 				return err
 			}
-		} else {
-			// Not a directory, simply append its full path
-			workload.files = append(workload.files, file(ff))
+			continue
 		}
+
+		// Append files to workload list
+		workload.files = append(workload.files, file(fp))
 	}
 	return nil
 }
