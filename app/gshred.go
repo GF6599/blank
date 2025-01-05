@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,23 +34,23 @@ func Gshred(args []string) {
 		// Convert to absolute path
 		absolutePath, err := filepath.Abs(arg)
 		if err != nil {
-			log.Fatalln("Failed to find absolute path of file: ", arg, err)
+			slog.Error("Failed to find absolute path of file: ", arg, err)
 		}
 		isdir, err := isdir(absolutePath)
 		if err != nil {
-			log.Fatalln("Provided path: ", arg, " is ill formed!")
+			slog.Error("Provided path: ", arg, " is ill formed!")
 		}
 		if isdir {
 			if err := walk(arg); err != nil {
-				log.Fatalln("Failed to walk the directory: ", arg)
+				slog.Error("Failed to walk the directory: ", arg)
 			}
 		} else {
 			workload.files = append(workload.files, file(arg))
 		}
 	}
-	log.Infof("Number of files to shred: %d", workload.len())
+	slog.Info("Number of files to shred: %d", workload.len())
 	concurrentShred(workload)
-	log.Info("gShred finished! All files and dir deleted.")
+	slog.Info("gShred finished! All files and dir deleted.")
 }
 
 // Delete a directory by performing rm -rf command
@@ -59,7 +60,7 @@ func shredDir(d directory) error {
 	// Maybe mimic shred behaviour and rename the dir to len(dir_name) 0's
 	// and then reduce the length by 1 each rename until len(dir_name) is 1
 	// then remove the dir
-	log.Info("Deleting dir: ", d)
+	slog.Info("Deleting dir: ", d)
 	cmd := exec.Command("rm", "-rf", string(d))
 	if err := cmd.Run(); err != nil {
 		return err
@@ -94,7 +95,7 @@ func concurrentShred(workload work) {
 		var done int
 		for range stats {
 			done++
-			log.Infof("%.2f%%\n", (float64(done)/float64(workload.len()))*100)
+			slog.Info("%.2f%%\n", (float64(done)/float64(workload.len()))*100)
 		}
 	}()
 	// Loop over all the files and shred them concurrently.
@@ -111,7 +112,7 @@ func concurrentShred(workload work) {
 			}()
 			if err := shredFile(f); err != nil {
 				stat, _ := os.Stat(string(f))
-				log.Fatalln("Failed to shred file: ", f, stat.Mode())
+				slog.Error("Failed to shred file: ", f, stat.Mode())
 			}
 		}(f)
 	}
@@ -120,7 +121,7 @@ func concurrentShred(workload work) {
 	// Delete the folders after all files are shreded
 	for _, dir := range workload.directories {
 		if err := shredDir(dir); err != nil {
-			log.Fatalln("Failed to delete dir: ", dir)
+			slog.Error("Failed to delete dir: ", dir)
 		}
 		stats <- fmt.Sprintf("Directory: %s", dir)
 	}
@@ -130,7 +131,7 @@ func concurrentShred(workload work) {
 func dirents(dir string) []fs.DirEntry {
 	files, err := os.ReadDir(string(dir))
 	if err != nil {
-		log.Warn("Failed to read dir contents: ", dir)
+		slog.Warn("Failed to read dir contents: ", dir)
 		return nil
 	}
 	return files
@@ -140,7 +141,7 @@ func dirents(dir string) []fs.DirEntry {
 func isdir(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
-		log.Warn("Failed to check isdir!", path, err)
+		slog.Warn("Failed to check isdir!", path, err)
 		return false, err
 	}
 	if f.IsDir() {
@@ -153,11 +154,11 @@ func isdir(path string) (bool, error) {
 func isSymLink(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
-		log.Warn("Failed to check isSymLink!", path, err)
+		slog.Warn("Failed to check isSymLink!", path, err)
 		return false, err
 	}
 	if f.Mode()&os.ModeSymlink != 0 {
-		log.Warn("symlink found")
+		slog.Warn("symlink found")
 		return true, nil
 	}
 	return false, nil
@@ -182,20 +183,20 @@ func walk(dir string) error {
 
 		// Cannot shred a symlink. Use normal rm -rf instead
 		if isSymbolicLink, err = isSymLink(fp); err != nil {
-			log.Fatalf("Problem reading info on path: %s.", fp, err)
+			slog.Error("Problem reading info on path: %s.", fp, err)
 		}
 		if isSymbolicLink {
-			log.Info("%s is a symbolic link, removing with 'rm -rf'...")
+			slog.Info("%s is a symbolic link, removing with 'rm -rf'...")
 			cmd := exec.Command("rm", "-rf", fp)
 			if err := cmd.Run(); err != nil {
-				log.Fatal("Faile to remove symbolic link:", fp)
+				slog.Error("Faile to remove symbolic link:", fp)
 			}
 			continue
 		}
 
 		// Recursively walk the sub directory
 		if isDirectory, err = isdir(fp); err != nil {
-			log.Warn("Ignoring error and continue with dir walk.")
+			slog.Warn("Ignoring error and continue with dir walk.")
 			continue
 		}
 		if isDirectory {
