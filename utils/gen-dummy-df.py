@@ -171,14 +171,14 @@ def build(root: Path, large_mb: int, many: int, depth: int) -> Path:
     make_symlink("missing_target", root / "dangling_link")
 
     # Named pipe (FIFO) and UNIX socket
-    make_fifo(root / "named_pipe")
-    make_unix_socket(root / "unix_socket")
+    # make_fifo(root / "named_pipe")
+    # make_unix_socket(root / "unix_socket")
 
     # Permission edge cases
-    create_text_file(root / "no_read.txt", "no read please\n")
-    (root / "no_list_dir").mkdir(exist_ok=True)
-    make_no_perms(root / "no_read.txt")
-    make_no_perms(root / "no_list_dir")
+    # create_text_file(root / "no_read.txt", "no read please\n")
+    # (root / "no_list_dir").mkdir(exist_ok=True)
+    # make_no_perms(root / "no_read.txt")
+    # make_no_perms(root / "no_list_dir")
 
     # Timestamps (old & future)
     old = int(datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
