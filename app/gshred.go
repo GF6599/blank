@@ -1,3 +1,5 @@
+// Package app
+// Contains the functionality of shreding
 package app
 
 import (

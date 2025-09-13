@@ -1,3 +1,4 @@
+// Package cmd contains the root command for starting the gs application
 package cmd
 
 import (
