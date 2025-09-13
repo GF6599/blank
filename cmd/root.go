@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	gshred "gshred/app"
+	tui "gshred/tui"
 
 	"github.com/spf13/cobra"
 )
@@ -19,7 +19,7 @@ var rootCmd = &cobra.Command{
 			cmd.Help()
 			return
 		}
-		gshred.Gshred(args)
+		tui.UIStart(args)
 	},
 }
 

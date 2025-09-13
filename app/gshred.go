@@ -3,6 +3,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 type (
@@ -28,7 +30,7 @@ func (w *work) len() int {
 
 // Gshred expands the CLI args and find all the individual files.
 // The files will then be concurrently shredded.
-func Gshred(args []string) {
+func Gshred(ctx context.Context, args []string, progress chan<- float64) {
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
 	for _, arg := range args {
@@ -56,7 +58,7 @@ func Gshred(args []string) {
 		return
 	}
 	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
-	concurrentShred(w)
+	concurrentShred(w, progress)
 	slog.Info("gShred finished! All files and dir deleted.")
 }
 
@@ -82,35 +84,37 @@ func shredFile(f file) error {
 // Given a list of files to shred, perform the shred Command
 // on files concurrently, and then perform rm -rf on any
 // directories afterwards
-func concurrentShred(w *work) {
-	// Channel for reporting which file is being operated on.
-	stats := make(chan string, 128)
+func concurrentShred(w *work, progress chan<- float64) {
 	// Semaphore to limit the amount of concurrent shredding happening.
 	sema := make(chan struct{}, 100)
-	// Create waitgroup for all goroutines to finish
 	var wg sync.WaitGroup
-	// Progress goroutine
-	progressDone := make(chan struct{})
-	go func(total int) {
-		defer close(progressDone)
-		var done int
-		for range stats {
-			done++
-			// Avoid division by zero (already guarded before) but keep safe
-			if total > 0 {
-				pct := (float64(done) / float64(total)) * 100
-				slog.Info("Overall progress", "PERCENT", pct)
-			}
+
+	total := w.len()
+	if total == 0 {
+		close(progress)
+		return
+	}
+	var done int64
+
+	update := func() {
+		// Increment completed items (files + directories)
+		d := atomic.AddInt64(&done, 1)
+		pct := float64(d) / float64(total)
+		if pct > 1 {
+			pct = 1
 		}
-	}(w.len())
-	// Loop over all the files and shred them concurrently.
+		progress <- pct
+		slog.Info("Overall progress", "PERCENT", pct)
+	}
+
+	// Launch file shredders
 	for _, f := range w.files {
 		wg.Add(1)
 		go func(f file) {
 			sema <- struct{}{}
 			defer func() {
 				<-sema
-				stats <- fmt.Sprintf("File: %s", f)
+				update() // count this file (whether success or failure)
 				wg.Done()
 			}()
 			if err := shredFile(f); err != nil {
@@ -122,18 +126,20 @@ func concurrentShred(w *work) {
 			}
 		}(f)
 	}
-	// Wait for all file shredding goroutines to finish
+
+	// Wait until all file goroutines finish
 	wg.Wait()
-	// Delete the folders after all files are shredded
+
+	// Now delete directories (sequentially) and update progress after each
 	for _, dir := range w.directories {
 		if err := shredDir(dir); err != nil {
 			slog.Error("Failed to delete dir", "DIR", dir, "ERR", err)
 		}
-		stats <- fmt.Sprintf("Directory: %s", dir)
+		update()
 	}
-	// All sends complete; safe to close stats
-	close(stats)
-	<-progressDone // ensure progress logging completes before return
+
+	// All work complete; safe to close channel so the TUI can terminate.
+	close(progress)
 }
 
 // Get the contents of a directory.

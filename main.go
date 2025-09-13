@@ -10,9 +10,7 @@
 
 package main
 
-import (
-	"gshred/cmd"
-)
+import "gshred/cmd"
 
 func main() {
 	cmd.Execute()
