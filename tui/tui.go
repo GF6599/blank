@@ -32,7 +32,7 @@ func UIStart() {
 	}
 
 	if _, err := tea.NewProgram(m).Run(); err != nil {
-		slog.Error("Oh no!", err)
+		slog.Error("Oh no!", "ERR", err)
 	}
 }
 

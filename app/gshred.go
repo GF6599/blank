@@ -12,8 +12,10 @@ import (
 	"sync"
 )
 
-type file string
-type directory string
+type (
+	file      string
+	directory string
+)
 
 type work struct {
 	files       []file
@@ -24,11 +26,9 @@ func (w *work) len() int {
 	return len(w.files) + len(w.directories)
 }
 
-var (
-	workload work
-)
+var workload work
 
-// Expand the CLI args and find all the individual files.
+// Gshred expands the CLI args and find all the individual files.
 // The files will then be concurrently shredded.
 func Gshred(args []string) {
 	// var toShred []string
@@ -36,21 +36,21 @@ func Gshred(args []string) {
 		// Convert to absolute path
 		absolutePath, err := filepath.Abs(arg)
 		if err != nil {
-			slog.Error("Failed to find absolute path of file: ", arg, err)
+			slog.Error("Failed to find absolute path of file!", "PATH", arg, "ERR", err)
 		}
 		isdir, err := isdir(absolutePath)
 		if err != nil {
-			slog.Error("Provided path: ", arg, " is ill formed!")
+			slog.Error("Ill formed path!", "Path", arg)
 		}
 		if isdir {
 			if err := walk(arg); err != nil {
-				slog.Error("Failed to walk the directory: ", arg)
+				slog.Error("Failed to walk the directory: ", "PATH", arg, "ERR", err)
 			}
 		} else {
 			workload.files = append(workload.files, file(arg))
 		}
 	}
-	slog.Info("Number of files to shred: %d", workload.len())
+	slog.Info("Number of files to shred", "TOTAL", workload.len())
 	concurrentShred(workload)
 	slog.Info("gShred finished! All files and dir deleted.")
 }
@@ -62,7 +62,7 @@ func shredDir(d directory) error {
 	// Maybe mimic shred behaviour and rename the dir to len(dir_name) 0's
 	// and then reduce the length by 1 each rename until len(dir_name) is 1
 	// then remove the dir
-	slog.Info("Deleting dir: ", d)
+	slog.Info("Deleting directory", "DIR", string(d))
 	cmd := exec.Command("rm", "-rf", string(d))
 	if err := cmd.Run(); err != nil {
 		return err
@@ -97,12 +97,11 @@ func concurrentShred(workload work) {
 		var done int
 		for range stats {
 			done++
-			slog.Info("%.2f%%\n", (float64(done)/float64(workload.len()))*100)
+			slog.Info("Overall progress", "PERCENT", (float64(done)/float64(workload.len()))*100)
 		}
 	}()
 	// Loop over all the files and shred them concurrently.
 	for _, f := range workload.files {
-		f := f
 		// Start a goroutine to shred the file
 		wg.Add(1)
 		go func(f file) {
@@ -114,7 +113,7 @@ func concurrentShred(workload work) {
 			}()
 			if err := shredFile(f); err != nil {
 				stat, _ := os.Stat(string(f))
-				slog.Error("Failed to shred file: ", f, stat.Mode())
+				slog.Error("Failed to shred file!", "NAME", f, "MODE", stat.Mode())
 			}
 		}(f)
 	}
@@ -123,7 +122,7 @@ func concurrentShred(workload work) {
 	// Delete the folders after all files are shreded
 	for _, dir := range workload.directories {
 		if err := shredDir(dir); err != nil {
-			slog.Error("Failed to delete dir: ", dir)
+			slog.Error("Failed to delete dir!", "DIR", dir)
 		}
 		stats <- fmt.Sprintf("Directory: %s", dir)
 	}
@@ -133,7 +132,7 @@ func concurrentShred(workload work) {
 func dirents(dir string) []fs.DirEntry {
 	files, err := os.ReadDir(string(dir))
 	if err != nil {
-		slog.Warn("Failed to read dir contents: ", dir)
+		slog.Warn("Failed to read dir contents!", "DIR", dir)
 		return nil
 	}
 	return files
@@ -143,7 +142,7 @@ func dirents(dir string) []fs.DirEntry {
 func isdir(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
-		slog.Warn("Failed to check isdir!", path, err)
+		slog.Warn("Failed to check isdir!", "PATH", path, "ERR", err)
 		return false, err
 	}
 	if f.IsDir() {
@@ -156,11 +155,11 @@ func isdir(path string) (bool, error) {
 func isSymLink(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
-		slog.Warn("Failed to check isSymLink!", path, err)
+		slog.Warn("Failed to check isSymLink!", "PATH", path, "ERR", err)
 		return false, err
 	}
 	if f.Mode()&os.ModeSymlink != 0 {
-		slog.Warn("symlink found")
+		slog.Warn("Symlink encountered")
 		return true, nil
 	}
 	return false, nil
@@ -185,13 +184,13 @@ func walk(dir string) error {
 
 		// Cannot shred a symlink. Use normal rm -rf instead
 		if isSymbolicLink, err = isSymLink(fp); err != nil {
-			slog.Error("Problem reading info on path: %s.", fp, err)
+			slog.Error("Problem reading info on path!", "PATH", fp, "ERR", err)
 		}
 		if isSymbolicLink {
-			slog.Info("%s is a symbolic link, removing with 'rm -rf'...")
+			slog.Info("Symbolic link file detected, removing with 'rm -rf'", "File", fp)
 			cmd := exec.Command("rm", "-rf", fp)
 			if err := cmd.Run(); err != nil {
-				slog.Error("Faile to remove symbolic link:", fp)
+				slog.Error("Faile to remove symbolic link!", "PATH", fp)
 			}
 			continue
 		}
