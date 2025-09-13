@@ -1,4 +1,7 @@
-package app
+// Package tui
+// Contains the code for showing a TUI progress bar
+// using bubbletea as the framework
+package tui
 
 import (
 	"log/slog"
@@ -23,7 +26,7 @@ func SetShredProgressChannel(pc <-chan float64) {
 	shredPercent = pc
 }
 
-func UiStart() {
+func UIStart() {
 	m := model{
 		progress: progress.New(progress.WithDefaultGradient()),
 	}
@@ -33,8 +36,10 @@ func UiStart() {
 	}
 }
 
-type tickMsg time.Time
-type progressMsg float64
+type (
+	tickMsg     time.Time
+	progressMsg float64
+)
 
 type model struct {
 	progress progress.Model
