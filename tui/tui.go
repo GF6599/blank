@@ -54,7 +54,11 @@ func UIStart(args []string) {
 	if lf, err := os.OpenFile("gshred.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 		logger := slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{}))
 		slog.SetDefault(logger)
-		defer lf.Close()
+		defer func() {
+			if err := lf.Close(); err != nil {
+				slog.Error("Failed to close the log file", "ERR", err)
+			}
+		}()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
