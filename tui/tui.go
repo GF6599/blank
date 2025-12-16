@@ -227,11 +227,3 @@ func listenForActivityUpdate(ctx context.Context, activity <-chan string) tea.Cm
 		}
 	}
 }
-
-// min bounds UI width calculations so the TUI remains readable.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
