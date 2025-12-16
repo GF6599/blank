@@ -16,6 +16,18 @@ default:
 fmt:
 	go fmt ./...
 
+run *args:
+	GOCACHE="$(pwd)/.gocache" go run . {{args}}
+
+test:
+	GOCACHE="$(pwd)/.gocache" go test ./...
+
+e2e:
+	tmp_dir="$(mktemp -d)"; \
+	GOCACHE="$(pwd)/.gocache" python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null; \
+	GOCACHE="$(pwd)/.gocache" go run . --no-ui "$tmp_dir"; \
+	rm -rf "$tmp_dir"
+
 deps:
 	go mod tidy
 	go mod verify
