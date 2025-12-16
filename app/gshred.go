@@ -1,5 +1,4 @@
-// Package app
-// Contains the functionality of shreding
+// Package app contains the secure deletion engine backing the CLI and TUI.
 package app
 
 import (
@@ -19,18 +18,25 @@ type (
 	directory string
 )
 
+var (
+	shredBinary = "shred"
+	rmBinary    = "rm"
+)
+
+// work groups files and directories queued for secure deletion.
 type work struct {
 	files       []file
 	directories []directory
 }
 
+// len returns the total count of files and directories in the work queue.
 func (w *work) len() int {
 	return len(w.files) + len(w.directories)
 }
 
-// Gshred expands the CLI args and find all the individual files.
-// The files will then be concurrently shredded.
-func Gshred(ctx context.Context, args []string, progress chan<- float64) {
+// Gshred expands CLI arguments, walks directories, and securely deletes each
+// item while streaming progress percentages and human-readable activity updates.
+func Gshred(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) {
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
 	for _, arg := range args {
@@ -46,7 +52,7 @@ func Gshred(ctx context.Context, args []string, progress chan<- float64) {
 			continue
 		}
 		if isdir {
-			if err := walk(w, absolutePath); err != nil {
+			if err := walk(ctx, w, absolutePath); err != nil {
 				slog.Error("Failed to walk the directory", "PATH", absolutePath, "ERR", err)
 			}
 		} else {
@@ -55,46 +61,75 @@ func Gshred(ctx context.Context, args []string, progress chan<- float64) {
 	}
 	if w.len() == 0 {
 		slog.Info("No files or directories to shred")
+		close(progress)
+		if activity != nil {
+			close(activity)
+		}
 		return
 	}
 	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
-	concurrentShred(w, progress)
+	concurrentShred(ctx, w, progress, activity)
 	slog.Info("gShred finished! All files and dir deleted.")
 }
 
-// Delete a directory by performing rm -rf command
-func shredDir(d directory) error {
+// shredDir removes a directory tree by invoking `rm -rf` via the provided context.
+func shredDir(ctx context.Context, d directory) error {
 	slog.Info("Deleting directory", "DIR", string(d))
-	cmd := exec.Command("rm", "-rf", string(d))
+	cmd := exec.CommandContext(ctx, rmBinary, "-rf", string(d))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rm -rf failed: %w (output: %s)", err, string(out))
 	}
 	return nil
 }
 
-// Shred a file by performing the shred command
-func shredFile(f file) error {
-	cmd := exec.Command("shred", "-uzfn", "10", string(f))
+// shredFile overwrites and removes a file by calling the system `shred` command.
+func shredFile(ctx context.Context, f file) error {
+	cmd := exec.CommandContext(ctx, shredBinary, "-uzfn", "10", string(f))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("shred failed: %w (output: %s)", err, string(out))
 	}
 	return nil
 }
 
-// Given a list of files to shred, perform the shred Command
-// on files concurrently, and then perform rm -rf on any
-// directories afterwards
-func concurrentShred(w *work, progress chan<- float64) {
+// concurrentShred fan-outs shredding work, limits in-flight jobs via a
+// semaphore, and emits live progress plus optional activity updates.
+func concurrentShred(ctx context.Context, w *work, progress chan<- float64, activity chan<- string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer close(progress)
+	if activity != nil {
+		defer close(activity)
+	}
 	// Semaphore to limit the amount of concurrent shredding happening.
 	sema := make(chan struct{}, 100)
 	var wg sync.WaitGroup
 
 	total := w.len()
 	if total == 0 {
-		close(progress)
 		return
 	}
 	var done int64
+
+	sendActivity := func(format string, args ...any) {
+		if activity == nil {
+			return
+		}
+		msg := fmt.Sprintf(format, args...)
+		select {
+		case <-ctx.Done():
+			return
+		case activity <- msg:
+		}
+	}
+
+	sendProgress := func(pct float64) {
+		select {
+		case <-ctx.Done():
+			return
+		case progress <- pct:
+		}
+	}
 
 	update := func() {
 		// Increment completed items (files + directories)
@@ -103,7 +138,7 @@ func concurrentShred(w *work, progress chan<- float64) {
 		if pct > 1 {
 			pct = 1
 		}
-		progress <- pct
+		sendProgress(pct)
 		slog.Info("Overall progress", "PERCENT", pct)
 	}
 
@@ -111,13 +146,22 @@ func concurrentShred(w *work, progress chan<- float64) {
 	for _, f := range w.files {
 		wg.Add(1)
 		go func(f file) {
-			sema <- struct{}{}
+			select {
+			case <-ctx.Done():
+				wg.Done()
+				return
+			case sema <- struct{}{}:
+			}
 			defer func() {
 				<-sema
 				update() // count this file (whether success or failure)
 				wg.Done()
 			}()
-			if err := shredFile(f); err != nil {
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			sendActivity("Shredding %s", string(f))
+			if err := shredFile(ctx, f); err != nil {
 				if stat, serr := os.Stat(string(f)); serr == nil {
 					slog.Error("Failed to shred file", "FILE", f, "MODE", stat.Mode(), "ERR", err)
 				} else {
@@ -132,17 +176,18 @@ func concurrentShred(w *work, progress chan<- float64) {
 
 	// Now delete directories (sequentially) and update progress after each
 	for _, dir := range w.directories {
-		if err := shredDir(dir); err != nil {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		sendActivity("Deleting directory %s", string(dir))
+		if err := shredDir(ctx, dir); err != nil {
 			slog.Error("Failed to delete dir", "DIR", dir, "ERR", err)
 		}
 		update()
 	}
-
-	// All work complete; safe to close channel so the TUI can terminate.
-	close(progress)
 }
 
-// Get the contents of a directory.
+// dirents reads directory entries and logs any failure.
 func dirents(dir string) []fs.DirEntry {
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -152,7 +197,7 @@ func dirents(dir string) []fs.DirEntry {
 	return files
 }
 
-// Checks whether the given path is a dir.
+// isDir reports whether the given path refers to a directory.
 func isDir(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
@@ -162,7 +207,7 @@ func isDir(path string) (bool, error) {
 	return f.IsDir(), nil
 }
 
-// Check if a given path is a symlink
+// isSymLink reports whether the path is a symbolic link.
 func isSymLink(path string) (bool, error) {
 	f, err := os.Lstat(path)
 	if err != nil {
@@ -176,9 +221,9 @@ func isSymLink(path string) (bool, error) {
 	return false, nil
 }
 
-// Walk a directory and collect all files & directories (recursive)
-// Symbolic links are removed via rm -rf and NOT shredded.
-func walk(w *work, dir string) error {
+// walk recursively collects files/directories, following actual directories but
+// deleting symbolic links to avoid shredding the linked target.
+func walk(ctx context.Context, w *work, dir string) error {
 	w.directories = append(w.directories, directory(dir))
 	de := dirents(dir)
 	for _, f := range de {
@@ -190,7 +235,7 @@ func walk(w *work, dir string) error {
 			continue
 		} else if isSymbolicLink {
 			slog.Info("Symbolic link detected, removing with 'rm -rf'", "PATH", fp)
-			cmd := exec.Command("rm", "-rf", fp)
+			cmd := exec.CommandContext(ctx, rmBinary, "-rf", fp)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				slog.Error("Failed to remove symbolic link", "PATH", fp, "ERR", err, "OUT", string(out))
 			}
@@ -204,7 +249,7 @@ func walk(w *work, dir string) error {
 		}
 		if isDirectory {
 			// Do not append here again; walk() will append when entering
-			if err := walk(w, fp); err != nil {
+			if err := walk(ctx, w, fp); err != nil {
 				return err
 			}
 			continue
