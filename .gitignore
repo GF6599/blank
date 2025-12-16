@@ -1,3 +1,6 @@
 Session.vim
 dummy-data
 *.log
+.gocache/
+bin/
+dist/
