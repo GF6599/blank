@@ -42,6 +42,11 @@ build-race: deps fmt
 	go build -mod=readonly -trimpath -race -ldflags "{{LDFLAGS}}" -o {{BIN_DIR}}/{{BINARY}}-race .
 	@echo "Built {{BIN_DIR}}/{{BINARY}}-race (version {{VERSION}} commit {{COMMIT}})"
 
+build-linux: deps fmt
+	mkdir -p {{BIN_DIR}}
+	GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -ldflags "{{LDFLAGS}}" -o {{BIN_DIR}}/{{BINARY}}-linux .
+	@echo "Built {{BIN_DIR}}/{{BINARY}}-race (version {{VERSION}} commit {{COMMIT}})"
+
 release: deps fmt
 	mkdir -p {{DIST_DIR}}
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -ldflags "{{LDFLAGS}}" -o {{DIST_DIR}}/{{BINARY}}-linux-amd64 .
