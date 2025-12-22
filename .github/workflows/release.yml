@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "🚀release.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate tag format
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if ! [[ "$tag" =~ ^🚀release\.[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]; then
+            echo "Tag '$tag' does not match 🚀release.yyyy.mm.dd"
+            exit 1
+          fi
+
+      - name: Build release binaries
+        run: |
+          mkdir -p dist
+          for goos in linux darwin; do
+            for goarch in amd64 arm64; do
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -mod=readonly -trimpath -ldflags "-s -w" \
+                -o "dist/gshred-${goos}-${goarch}" .
+            done
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum gshred-* > SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: gitea.com/actions/release-action@v1
+        with:
+          api_key: ${{ secrets.GITEA_TOKEN }}
+          files: |
+            dist/gshred-*
+            dist/SHA256SUMS
