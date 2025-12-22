@@ -30,24 +30,53 @@ jobs:
 
       - name: Build release binaries
         run: |
-          mkdir -p dist
-          for goos in linux darwin; do
+          mkdir -p dist/linux dist/darwin dist/windows
+          for goos in linux darwin windows; do
             for goarch in amd64 arm64; do
+              suffix=""
+              if [ "$goos" = "windows" ]; then
+                suffix=".exe"
+              fi
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -mod=readonly -trimpath -ldflags "-s -w" \
-                -o "dist/gshred-${goos}-${goarch}" .
+                -o "dist/${goos}/gshred-${goos}-${goarch}${suffix}" .
             done
           done
 
       - name: Generate checksums
         run: |
-          cd dist
-          sha256sum gshred-* > SHA256SUMS
+          for goos in linux darwin windows; do
+            cd "dist/${goos}"
+            sha256sum gshred-* > "SHA256SUMS-${goos}"
+            cd -
+          done
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gshred-linux-${{ github.ref_name }}
+          path: dist/linux/*
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gshred-darwin-${{ github.ref_name }}
+          path: dist/darwin/*
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gshred-windows-${{ github.ref_name }}
+          path: dist/windows/*
 
       - name: Publish GitHub release
         uses: gitea.com/actions/release-action@v1
         with:
           api_key: ${{ secrets.GITEA_TOKEN }}
           files: |
-            dist/gshred-*
-            dist/SHA256SUMS
+            dist/linux/gshred-*
+            dist/linux/SHA256SUMS-linux
+            dist/darwin/gshred-*
+            dist/darwin/SHA256SUMS-darwin
+            dist/windows/gshred-*
+            dist/windows/SHA256SUMS-windows
