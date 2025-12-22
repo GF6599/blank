@@ -64,7 +64,7 @@ func UIStart(args []string) {
 	vp := viewport.New(0, 0)
 	vp.Style = logBoxStyle
 	m := model{
-		progress:   progress.New(progress.WithScaledGradient("#FF7CCB", "#FDFF8C")),
+		progress:   progress.New(progress.WithScaledGradient("#eb6f92", "#31748f")),
 		viewport:   vp,
 		ctx:        ctx,
 		cancel:     cancel,
