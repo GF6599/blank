@@ -5,7 +5,6 @@ package tui
 import (
 	"context"
 	"log/slog"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -47,19 +46,9 @@ var (
 	viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 )
 
-// UIStart boots the Bubble Tea UI, redirecting logs off-screen and capturing
-// keyboard shortcuts for quitting or scrolling the activity viewport.
+// UIStart boots the Bubble Tea UI and captures keyboard shortcuts for quitting
+// or scrolling the activity viewport.
 func UIStart(args []string) {
-	// Redirect logs to a file so they don't interfere with the TUI
-	if lf, err := os.OpenFile("gshred.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
-		logger := slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{}))
-		slog.SetDefault(logger)
-		defer func() {
-			if err := lf.Close(); err != nil {
-				slog.Error("Failed to close the log file", "ERR", err)
-			}
-		}()
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
 	vp.Style = logBoxStyle

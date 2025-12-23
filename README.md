@@ -41,4 +41,4 @@ graph TD
 | `just test`  | Execute `go test ./...` with a writable cache path.                          |
 | `just e2e`   | Generate rich test data via `utils/gen-dummy-df.py` and shred it headlessly. |
 
-Logs are redirected to `gshred.log` during TUI runs so stdout remains clean. Binaries and artifacts are written under `bin/` or `dist/` and should stay out of version control. When extending the repo, mirror the structure above so new modules remain easy to locate.
+Use `--log` to redirect logs to `gshred.log` during TUI runs so stdout remains clean. Binaries and artifacts are written under `bin/` or `dist/` and should stay out of version control. When extending the repo, mirror the structure above so new modules remain easy to locate.

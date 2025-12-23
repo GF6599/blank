@@ -4,6 +4,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -14,8 +16,9 @@ import (
 )
 
 var (
-	noUI    bool
-	rootCmd = &cobra.Command{
+	noUI      bool
+	logToFile bool
+	rootCmd   = &cobra.Command{
 		Use:   "gshred [file|dir]...",
 		Short: "Concurrnet Shred command implemented in go.",
 		Long:  "Will use the bash 'shred -n 10 -uvz' command to shred any files or dir provided to gshred.",
@@ -24,6 +27,8 @@ var (
 				cmd.Help()
 				return
 			}
+			closeLog := setupLogging(logToFile, !noUI)
+			defer closeLog()
 			if noUI {
 				runHeadless(args)
 				return
@@ -35,6 +40,7 @@ var (
 
 func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
+	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to gshred.log")
 	_ = rootCmd.Flags().MarkHidden("no-ui")
 }
 
@@ -70,4 +76,30 @@ func runHeadless(args []string) {
 
 	app.Gshred(ctx, args, progressCh, activityCh)
 	wg.Wait()
+}
+
+func setupLogging(enable bool, suppress bool) func() {
+	if enable {
+		lf, err := os.OpenFile("gshred.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			if suppress {
+				slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
+			}
+			slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{})).
+				Error("Failed to open log file", "ERR", err)
+			return func() {}
+		}
+		logger := slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{}))
+		slog.SetDefault(logger)
+		return func() {
+			if err := lf.Close(); err != nil {
+				slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{})).
+					Error("Failed to close the log file", "ERR", err)
+			}
+		}
+	}
+	if suppress {
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
+	}
+	return func() {}
 }
