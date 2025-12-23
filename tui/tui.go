@@ -18,6 +18,13 @@ import (
 const (
 	padding  = 2
 	maxWidth = 80
+
+	rosePineText   = "#e0def4"
+	rosePineSubtle = "#908caa"
+	rosePineMuted  = "#6e6a86"
+	rosePineLove   = "#eb6f92"
+	rosePinePine   = "#31748f"
+	rosePineFoam   = "#9ccfd8"
 )
 
 type (
@@ -41,8 +48,14 @@ type model struct {
 }
 
 var (
-	helpStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Render
-	logBoxStyle          = lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1)
+	helpStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(rosePineSubtle)).
+			Render
+	logBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color(rosePineFoam)).
+			Foreground(lipgloss.Color(rosePineText)).
+			Padding(0, 1)
 	viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 )
 
@@ -52,8 +65,11 @@ func UIStart(args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
 	vp.Style = logBoxStyle
+	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
+	progressBar.EmptyColor = rosePineMuted
+	progressBar.PercentageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(rosePineText))
 	m := model{
-		progress:   progress.New(progress.WithScaledGradient("#eb6f92", "#31748f")),
+		progress:   progressBar,
 		viewport:   vp,
 		ctx:        ctx,
 		cancel:     cancel,
