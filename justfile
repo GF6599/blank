@@ -1,6 +1,8 @@
 set dotenv-load
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
+export GOCACHE := justfile_directory() / ".gocache"
+
 BINARY := "gshred"
 BIN_DIR := "bin"
 DIST_DIR := "dist"
@@ -23,19 +25,19 @@ fmt:
 # Run the app
 [group('run')]
 run *args:
-	GOCACHE="$(pwd)/.gocache" go run . {{args}}
+	go run . {{args}}
 
 # Run the tests
 [group('dev')]
 test:
-	GOCACHE="$(pwd)/.gocache" go test ./...
+	go test ./...
 
 # Generate a dummy tree and run end-to-end
 [group('dev')]
 e2e:
 	tmp_dir="$(mktemp -d)"; \
-	GOCACHE="$(pwd)/.gocache" python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null; \
-	GOCACHE="$(pwd)/.gocache" go run . --no-ui "$tmp_dir"; \
+	python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null; \
+	go run . --no-ui "$tmp_dir"; \
 	rm -rf "$tmp_dir"
 
 # Tidy and verify go modules
