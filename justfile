@@ -7,6 +7,8 @@ BINARY := "gshred"
 BIN_DIR := "bin"
 DIST_DIR := "dist"
 
+STATICCHECK := "honnef.co/go/tools/cmd/staticcheck@v0.7.0"
+
 VERSION := `git describe --tags --always --dirty 2>/dev/null || echo dev`
 COMMIT  := `git rev-parse --short HEAD 2>/dev/null || echo none`
 DATE    := `date -u +%Y-%m-%dT%H:%M:%SZ`
@@ -31,6 +33,27 @@ run *args:
 [group('dev')]
 test:
 	go test ./...
+
+# Run the tests with the race detector
+[group('dev')]
+test-race:
+	go test -race -count=1 ./...
+
+# Report sources that are not gofmt-clean, without rewriting them
+[group('dev')]
+fmt-check:
+	@test -z "$(gofmt -l .)" || { echo "Not gofmt-clean:"; gofmt -l .; echo "Run 'just fmt'."; exit 1; }
+
+# Vet and lint go sources
+[group('dev')]
+lint:
+	go vet ./...
+	go run {{STATICCHECK}} ./...
+
+# Run the full quality gate. CI and the commit commands call this by name.
+[group('dev')]
+check: fmt-check lint test-race
+	go build ./...
 
 # Generate a dummy tree and run end-to-end
 [group('dev')]
