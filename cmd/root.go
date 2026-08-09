@@ -112,8 +112,15 @@ func runHeadless(plan app.Plan, opts app.Options) error {
 
 	go func() {
 		defer wg.Done()
+		// The engine reports every target, and a large tree holds far more of
+		// them than there are percentages. Truncating rather than rounding keeps
+		// 100% for the target that actually finishes the run.
+		printed := -1
 		for p := range progressCh {
-			fmt.Printf("Progress: %.0f%%\n", p*100)
+			if pct := int(p * 100); pct != printed {
+				printed = pct
+				fmt.Printf("Progress: %d%%\n", pct)
+			}
 		}
 	}()
 

@@ -287,6 +287,39 @@ func TestYesSkipsTheQuestion(t *testing.T) {
 	}
 }
 
+// Headless mode prints a progress line only when the number moves.
+// Given a tree of far more targets than there are percentages, when it is
+// destroyed headlessly, then no more than one line is printed per whole
+// percent.
+// Why it matters: one line per target buries the activity lines a caller reads
+// the run from, and a tree of a hundred thousand files prints a hundred
+// thousand of them.
+func TestHeadlessProgressPrintsOnlyWhenItMoves(t *testing.T) {
+	// Given: a tree of 300 files, so a line per target is three per percent.
+	root := t.TempDir()
+	for i := range 300 {
+		p := filepath.Join(root, fmt.Sprintf("file-%03d.txt", i))
+		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+
+	// When: the tree is destroyed headlessly.
+	out, code := run(t, "--no-ui", "--yes", "--passes", "1", root)
+	if code != 0 {
+		t.Fatalf("the run exited %d\n%s", code, out)
+	}
+
+	// Then: there is at most one line per whole percent.
+	if lines := strings.Count(out, "Progress:"); lines > 101 {
+		t.Fatalf("the run printed %d progress lines over 301 targets", lines)
+	}
+	// And: it still reports reaching the end.
+	if !strings.Contains(out, "Progress: 100%") {
+		t.Fatalf("the run never reported reaching 100%%\n%s", out)
+	}
+}
+
 // The log is written where the caller asked for it.
 // Given a path for the log, when a tree is destroyed, then the log is at that
 // path and names the file it destroyed.
