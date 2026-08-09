@@ -60,7 +60,7 @@ func runHeadless(args []string) error {
 	defer cancel()
 
 	progressCh := make(chan float64)
-	activityCh := make(chan string)
+	activityCh := make(chan app.Event)
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -73,8 +73,13 @@ func runHeadless(args []string) error {
 
 	go func() {
 		defer wg.Done()
-		for msg := range activityCh {
-			fmt.Printf("Activity: %s\n", msg)
+		// One line per target, as the run reaches it. Anything that survives is
+		// named in the error, so the settle events would only repeat the list.
+		for e := range activityCh {
+			if e.Stage != app.StageStart {
+				continue
+			}
+			fmt.Printf("Activity: %s %s\n", e.Verb, e.Path)
 		}
 	}()
 

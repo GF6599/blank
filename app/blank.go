@@ -32,6 +32,43 @@ var (
 	readDir = os.ReadDir
 )
 
+// Stage is how far the run has got with one target.
+type Stage int
+
+const (
+	StageStart Stage = iota
+	StageDone
+	StageFailed
+)
+
+func (s Stage) String() string {
+	switch s {
+	case StageStart:
+		return "start"
+	case StageDone:
+		return "done"
+	case StageFailed:
+		return "failed"
+	default:
+		return fmt.Sprintf("Stage(%d)", int(s))
+	}
+}
+
+// Event reports one target as the run reaches it and again as it settles. Path
+// identifies the target across both, and is already safe to write to a terminal.
+type Event struct {
+	Verb  string
+	Path  string
+	Stage Stage
+}
+
+// The wording of an activity row, kept here so the two events for one target
+// cannot describe it differently.
+const (
+	verbFile = "Overwriting"
+	verbDir  = "Deleting directory"
+)
+
 // Failure names one target the run did not destroy.
 type Failure struct {
 	Path string
@@ -150,7 +187,7 @@ func classify(path string) (kind, error) {
 // Blank expands CLI arguments, walks directories, and securely deletes each
 // item while streaming progress percentages and human-readable activity
 // updates. It returns an error naming every target that survived.
-func Blank(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) error {
+func Blank(ctx context.Context, args []string, progress chan<- float64, activity chan<- Event) error {
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
 	fails := &failures{}
@@ -210,7 +247,7 @@ func shredFile(ctx context.Context, f file) error {
 
 // concurrentShred fans work out to a fixed pool of workers, and emits live
 // progress plus optional activity updates.
-func concurrentShred(ctx context.Context, w *work, fails *failures, progress chan<- float64, activity chan<- string) {
+func concurrentShred(ctx context.Context, w *work, fails *failures, progress chan<- float64, activity chan<- Event) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -223,15 +260,14 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 	total := w.len()
 	var done atomic.Int64
 
-	sendActivity := func(format string, args ...any) {
+	sendEvent := func(verb, path string, stage Stage) {
 		if activity == nil {
 			return
 		}
-		msg := displayText(fmt.Sprintf(format, args...))
 		select {
 		case <-ctx.Done():
 			return
-		case activity <- msg:
+		case activity <- Event{Verb: verb, Path: displayText(path), Stage: stage}:
 		}
 	}
 
@@ -241,6 +277,19 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 			return
 		case progress <- pct:
 		}
+	}
+
+	// runTarget announces the target, does the work, then announces how it
+	// ended. One branch decides both the stage and the failure record, so the
+	// panel cannot settle a row that fails or leave a destroyed one running.
+	runTarget := func(verb, path string, work func() error) {
+		sendEvent(verb, path, StageStart)
+		stage := StageDone
+		if err := work(); err != nil {
+			fails.add(path, err)
+			stage = StageFailed
+		}
+		sendEvent(verb, path, stage)
 	}
 
 	update := func() {
@@ -266,13 +315,16 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 				if ctx.Err() != nil {
 					return
 				}
-				sendActivity("Overwriting %s", string(f))
-				if err := shredFile(ctx, f); err != nil {
+				runTarget(verbFile, string(f), func() error {
+					err := shredFile(ctx, f)
+					if err == nil {
+						return nil
+					}
 					if stat, serr := os.Stat(string(f)); serr == nil {
 						err = fmt.Errorf("%w (mode %s)", err, stat.Mode())
 					}
-					fails.add(string(f), err)
-				}
+					return err
+				})
 				update()
 			}
 		}()
@@ -294,10 +346,7 @@ feed:
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		sendActivity("Deleting directory %s", string(dir))
-		if err := shredDir(ctx, dir); err != nil {
-			fails.add(string(dir), err)
-		}
+		runTarget(verbDir, string(dir), func() error { return shredDir(ctx, dir) })
 		update()
 	}
 }

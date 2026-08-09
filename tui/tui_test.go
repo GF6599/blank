@@ -22,7 +22,7 @@ func TestActivityHistoryStaysBounded(t *testing.T) {
 	// When: many more messages arrive than the panel retains.
 	const sent = activityHistory * 3
 	for i := range sent {
-		cur, _ = cur.Update(activityMsg(fmt.Sprintf("Overwriting /data/file-%06d.bin", i)))
+		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%06d.bin", i)})
 	}
 	got := cur.(model)
 
@@ -109,7 +109,7 @@ func TestActivityPanelDrawsTheScrollBarInsideTheFrame(t *testing.T) {
 	// Given: a panel holding far more history than it shows.
 	var cur tea.Model = previewModel(t, 80, 24, 0.5, nil, false)
 	for i := range 40 {
-		cur, _ = cur.Update(activityMsg(fmt.Sprintf("Overwriting /data/file-%03d.bin", i)))
+		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%03d.bin", i)})
 	}
 
 	// When: the newest line has just arrived, so the view sits at the bottom.

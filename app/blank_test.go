@@ -19,7 +19,18 @@ import (
 type result struct {
 	err      error
 	progress []float64
-	activity []string
+	activity []Event
+}
+
+// stagesFor returns, in order, the stages the run reported for one target.
+func stagesFor(events []Event, path string) []Stage {
+	var out []Stage
+	for _, e := range events {
+		if e.Path == path {
+			out = append(out, e.Stage)
+		}
+	}
+	return out
 }
 
 // runBlank drives the engine with a collector on each channel, so a test reads
@@ -27,7 +38,7 @@ type result struct {
 func runBlank(t *testing.T, args ...string) result {
 	t.Helper()
 	progressCh := make(chan float64)
-	activityCh := make(chan string)
+	activityCh := make(chan Event)
 
 	var res result
 	var wg sync.WaitGroup
@@ -237,6 +248,44 @@ func TestBlankReportsAFailedOverwrite(t *testing.T) {
 	}
 }
 
+// Every target is announced when the run reaches it and again when it settles.
+// Given one file that overwrites and one that refuses, when the run finishes,
+// then each reports a start and then its own outcome.
+// Why it matters: a target announced only at the start reads as destroyed the
+// moment the work is queued, so a reader is told a file is gone while the
+// overwrite is still running, or after it has already failed.
+func TestBlankReportsTheOutcomeOfEachTarget(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given: two files, one of which the overwrite refuses.
+	root := t.TempDir()
+	ordinary := filepath.Join(root, "ordinary.txt")
+	stubborn := filepath.Join(root, "refuses.txt")
+	for _, p := range []string{ordinary, stubborn} {
+		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+	t.Setenv(testsupport.FailMarker, "refuses.txt")
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: the file that overwrote is reported as done, and only once it is.
+	if got := stagesFor(res.activity, ordinary); !slices.Equal(got, []Stage{StageStart, StageDone}) {
+		t.Fatalf("the file that overwrote reported %v", got)
+	}
+	// And: the file that survived is reported as failed, so the row cannot read
+	// as destroyed.
+	if got := stagesFor(res.activity, stubborn); !slices.Equal(got, []Stage{StageStart, StageFailed}) {
+		t.Fatalf("the file that survived reported %v", got)
+	}
+	// And: a directory settles the same way, so both passes report alike.
+	if got := stagesFor(res.activity, root); !slices.Equal(got, []Stage{StageStart, StageDone}) {
+		t.Fatalf("the directory reported %v", got)
+	}
+}
+
 // peakGoroutines destroys a flat tree of n files and returns the highest live
 // goroutine count seen while it ran.
 func peakGoroutines(t *testing.T, n int) int64 {
@@ -323,7 +372,10 @@ func TestBlankEscapesControlCharactersInNames(t *testing.T) {
 	if res.err == nil {
 		t.Fatalf("expected the refused overwrite to be reported")
 	}
-	emitted := append(slices.Clone(res.activity), res.err.Error())
+	emitted := []string{res.err.Error()}
+	for _, e := range res.activity {
+		emitted = append(emitted, e.Verb+" "+e.Path)
+	}
 	for _, line := range emitted {
 		for _, r := range line {
 			if r == '\n' {

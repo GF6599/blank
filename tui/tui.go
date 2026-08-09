@@ -43,7 +43,7 @@ const (
 type (
 	gsCompleteMsg struct{}
 	progressMsg   float64
-	activityMsg   string
+	activityMsg   app.Event
 )
 
 type model struct {
@@ -53,7 +53,7 @@ type model struct {
 	cancel       context.CancelFunc
 	args         []string
 	progressCh   chan float64
-	activityCh   chan string
+	activityCh   chan app.Event
 	done         chan error
 	completed    bool
 	logs         []string
@@ -79,7 +79,7 @@ func UIStart(args []string) error {
 		cancel:     cancel,
 		args:       args,
 		progressCh: make(chan float64),
-		activityCh: make(chan string),
+		activityCh: make(chan app.Event),
 		done:       make(chan error, 1),
 		logs:       make([]string, 0, 16),
 	}
@@ -167,7 +167,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenForProgressUpdate(m.ctx, m.progressCh)
 
 	case activityMsg:
-		m.logs = append(m.logs, string(msg))
+		// The panel appends one row per target, so it follows the start of the
+		// work and the settle events update a row it already holds.
+		if msg.Stage != app.StageStart {
+			return m, listenForActivityUpdate(m.ctx, m.activityCh)
+		}
+		m.logs = append(m.logs, msg.Verb+" "+msg.Path)
 		if len(m.logs) > activityHistory {
 			m.logs = slices.Delete(m.logs, 0, len(m.logs)-activityHistory)
 		}
@@ -244,7 +249,7 @@ func (m model) View() string {
 	return b.String()
 }
 
-func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string, done chan<- error) tea.Cmd {
+func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- app.Event, done chan<- error) tea.Cmd {
 	return func() tea.Msg {
 		go func() { done <- app.Blank(ctx, args, progress, activity) }()
 		return nil
@@ -269,7 +274,7 @@ func listenForProgressUpdate(ctx context.Context, progress <-chan float64) tea.C
 }
 
 // listenForActivityUpdate streams activity updates into the program loop.
-func listenForActivityUpdate(ctx context.Context, activity <-chan string) tea.Cmd {
+func listenForActivityUpdate(ctx context.Context, activity <-chan app.Event) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			select {
