@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"blank/app"
@@ -47,13 +48,18 @@ var (
 			}
 			defer closeLog()
 			if len(args) == 0 {
-				// A selector needs a terminal to draw on and somebody to read
-				// it. Without one, no arguments is a usage question rather than
-				// an invitation to browse.
-				if noUI || !interactive(cmd.InOrStdin()) {
+				wd, wdErr := os.Getwd()
+				if wdErr != nil {
+					return wdErr
+				}
+				start, startErr := selectorStart(interactive(cmd.InOrStdin()), noUI, wd)
+				if errors.Is(startErr, errShowUsage) {
 					return cmd.Help()
 				}
-				picked, pickErr := tui.PickTargets(".")
+				if startErr != nil {
+					return startErr
+				}
+				picked, pickErr := tui.PickTargets(start)
 				if pickErr != nil {
 					return pickErr
 				}
@@ -109,8 +115,36 @@ func init() {
 		"Random passes over each file before the final zero pass")
 }
 
-// A selector drawn into a pipe is a program waiting for keys that nobody can
-// send, so a run with no terminal on standard input never starts one.
+// errShowUsage says the caller asked a usage question rather than named a
+// place to browse.
+var errShowUsage = errors.New("no targets were named and no terminal can show a selector")
+
+// selectorStart reports the directory a run with no arguments should browse.
+//
+// It refuses a directory the guard already protects. Marking a row costs one
+// keystroke, so a selector opened on the home directory puts the whole of it one
+// key and one confirmation from destruction, and the command line requires a
+// path to be typed on purpose.
+func selectorStart(hasTerminal, headless bool, wd string) (string, error) {
+	// A selector drawn into a pipe is a program waiting for keys that nobody
+	// can send, so no terminal is a usage question and not a refusal.
+	if headless || !hasTerminal {
+		return "", errShowUsage
+	}
+	// The guard leaves the last component of a path alone, because destroying a
+	// symlink unlinks the link and never its target. Browsing is the opposite:
+	// a selector opened on a link lists what the link points at, so the name is
+	// resolved the whole way before it is checked and after it is checked.
+	if resolved, err := filepath.EvalSymlinks(wd); err == nil {
+		wd = resolved
+	}
+	if err := app.NewGuard().Refuses(wd); err != nil {
+		return "", fmt.Errorf("%w, so it will not open a selector there either. "+
+			"Name a path on the command line, or change to a narrower directory first", err)
+	}
+	return wd, nil
+}
+
 func interactive(in io.Reader) bool {
 	f, ok := in.(*os.File)
 	if !ok {
