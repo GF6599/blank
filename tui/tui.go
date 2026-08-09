@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -31,6 +32,12 @@ const (
 	// runs inline, so a view sized to the screen would claim the whole scrollback
 	// position and lose its top rows to the renderer's height clamp.
 	activityRows = 8
+
+	// Rows the panel keeps. Every message re-renders every retained row, so an
+	// uncapped history costs the square of the file count and holds every path
+	// in memory. This is many screens of scrollback, and `--log` writes the full
+	// manifest for anyone who needs all of it.
+	activityHistory = 200
 )
 
 type (
@@ -132,12 +139,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetContent(m.activityView())
 		return m, nil
 
-	// FrameMsg is sent when the progress bar wants to animate itself
-	case progress.FrameMsg:
-		progressModel, cmd := m.progress.Update(msg)
-		m.progress = progressModel.(progress.Model)
-		return m, cmd
-
 	case gsCompleteMsg:
 		if !m.completed && m.progress.Percent() < 1 {
 			// Leave completed=false so UI shows default prompt when run aborted early.
@@ -167,6 +168,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case activityMsg:
 		m.logs = append(m.logs, string(msg))
+		if len(m.logs) > activityHistory {
+			m.logs = slices.Delete(m.logs, 0, len(m.logs)-activityHistory)
+		}
 		m.viewport.SetContent(m.activityView())
 		m.viewport.GotoBottom()
 		return m, listenForActivityUpdate(m.ctx, m.activityCh)

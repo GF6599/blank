@@ -77,8 +77,8 @@ blk ./notes.txt ./old-project
 ```
 
 The interface renders inline rather than taking over the screen, so the final frame stays
-in your scrollback after the program exits. That frame is the record of what was
-destroyed.
+in your scrollback after the program exits. The activity panel holds the last 200 lines
+and scrolls. Pass `--log` when you want the full manifest of a larger run.
 
 ### Keys
 
