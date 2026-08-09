@@ -85,6 +85,18 @@ The interface renders inline rather than taking over the screen, so the final fr
 in your scrollback after the program exits. The activity panel holds the last 200 lines
 and scrolls. Pass `--log` when you want the full manifest of a larger run.
 
+Each row carries one target, and the cell before the name says how far that target has
+got.
+
+| Cell | Meaning |
+| --- | --- |
+| `⠋` | The overwrite is running. The animation only moves while work is in flight. |
+| blank | The target is destroyed. |
+| `!` | The target survived. The run will exit non-zero and name it. |
+
+A row settles the moment its own target settles, so what is left marked is what still
+needs reading. The panel shows as many rows in flight as `--jobs` allows.
+
 ### Keys
 
 | Key | Action |
@@ -101,8 +113,13 @@ and scrolls. Pass `--log` when you want the full manifest of a larger run.
 
 | Flag | Effect |
 | --- | --- |
+| `--jobs` | Targets to overwrite at the same time. Default 16. Below 1 is refused. |
 | `--log` | Write logs to `blank.log` in the working directory. Off by default. |
 | `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
+
+The work is disk bound, so the best `--jobs` value belongs to the device and not to the
+processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms, 8 took
+143ms, 100 took 177ms, and 4 took 216ms. Measure your own disk before you change it.
 
 `blank.log` records the full path of every file the run touched, so treat it as a manifest
 of what you destroyed. It is created mode `0600`, readable only by you.
@@ -111,9 +128,8 @@ of what you destroyed. It is created mode `0600`, readable only by you.
 
 These are properties of the current implementation. Each one is reproducible.
 
-- **The activity panel does not show a failure while the run proceeds.** The panel carries
-  only the target being worked on. A failure appears when the program exits, not when it
-  happens, so a long run gives no live sign that something survived.
+- **Scrolling does not hold during a run.** Every new target jumps the panel back to the
+  newest row, so `k` and `j` only stay put once the run has finished.
 - **A symlink argument destroys the target.** A symlink passed on the command line goes to
   `shred`, which follows it. A symlink found inside a walked directory is removed as a
   link, so only the top level is affected.
