@@ -27,6 +27,8 @@ Tests use the Go toolchain alone, with no extra framework. Name a test `TestFeat
 
 Sweep a range of terminal sizes when you test the interface. A layout defect that under-budgets a row only overruns at the widths where the content nearly fits, so a test at three fixed sizes walks straight past it. `tui/chrome_test.go` shows the pattern.
 
+Sweep the content as well as the size. A path measures one cell per rune only while it stays in ASCII, so a suite written in English proves nothing about the width maths. Include a wide-character case and an emoji case in any test that measures a row.
+
 Run `just check` before submitting.
 
 ## Commit and Pull Request Guidelines
