@@ -18,6 +18,7 @@ import (
 var (
 	noUI      bool
 	logToFile bool
+	dryRun    bool
 	jobs      int
 	passes    int
 	rootCmd   = &cobra.Command{
@@ -44,6 +45,13 @@ var (
 			if err != nil {
 				return err
 			}
+			if dryRun {
+				printPlan(cmd.OutOrStdout(), plan)
+				// A plan built over a directory nobody could read is missing
+				// whatever is inside it, so reporting it as clean would
+				// understate what the run would destroy.
+				return plan.Err()
+			}
 			if noUI {
 				return runHeadless(plan, opts)
 			}
@@ -55,6 +63,7 @@ var (
 func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
 	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
+	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be destroyed and destroy nothing")
 	rootCmd.Flags().IntVar(&jobs, "jobs", app.DefaultJobs,
 		"Targets to overwrite at the same time. Raise it on a faster disk")
 	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,
