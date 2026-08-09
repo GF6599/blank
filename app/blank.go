@@ -198,10 +198,19 @@ func classify(path string) (kind, error) {
 	}
 }
 
+// Options are the knobs a run is given. A struct rather than positional
+// arguments, because two bare ints side by side in the signature can be swapped
+// by a caller with nothing to catch it.
+type Options struct {
+	// Jobs is how many targets are worked on at the same time.
+	Jobs int
+}
+
 // Blank expands CLI arguments, walks directories, and securely deletes each
 // item while streaming progress percentages and human-readable activity
 // updates. It returns an error naming every target that survived.
-func Blank(ctx context.Context, args []string, jobs int, progress chan<- float64, activity chan<- Event) error {
+func Blank(ctx context.Context, args []string, opts Options, progress chan<- float64, activity chan<- Event) error {
+	jobs := opts.Jobs
 	// Refused rather than clamped, because a pool of no workers queues every file
 	// against nothing and the run hangs reporting them all as in progress.
 	if jobs < 1 {

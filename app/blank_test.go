@@ -62,7 +62,7 @@ func runBlankWithJobs(t *testing.T, jobs int, args ...string) result {
 		}
 	}()
 
-	res.err = Blank(context.Background(), args, jobs, progressCh, activityCh)
+	res.err = Blank(context.Background(), args, Options{Jobs: jobs}, progressCh, activityCh)
 	wg.Wait()
 	return res
 }

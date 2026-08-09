@@ -67,7 +67,7 @@ type model struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	args          []string
-	jobs          int
+	opts          app.Options
 	progressCh    chan float64
 	activityCh    chan app.Event
 	done          chan error
@@ -87,7 +87,7 @@ var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 // UIStart boots the Bubble Tea UI and captures keyboard shortcuts for quitting
 // or scrolling the activity viewport. It returns the engine's own error, and it
 // does not return before the engine stops.
-func UIStart(args []string, jobs int) error {
+func UIStart(args []string, opts app.Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
 	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
@@ -102,7 +102,7 @@ func UIStart(args []string, jobs int) error {
 		ctx:        ctx,
 		cancel:     cancel,
 		args:       args,
-		jobs:       jobs,
+		opts:       opts,
 		progressCh: make(chan float64),
 		activityCh: make(chan app.Event),
 		done:       make(chan error, 1),
@@ -125,7 +125,7 @@ func UIStart(args []string, jobs int) error {
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startBlankCmd(m.ctx, m.args, m.jobs, m.progressCh, m.activityCh, m.done, m.engineCh),
+		startBlankCmd(m.ctx, m.args, m.opts, m.progressCh, m.activityCh, m.done, m.engineCh),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
 		listenForEngine(m.engineCh),
@@ -363,10 +363,10 @@ func (m model) View() string {
 // quit can outlive it, so whichever receiver won a shared channel would leave
 // the other blocked on an empty one. Both of these are buffered, so neither
 // send waits for a reader that may never come.
-func startBlankCmd(ctx context.Context, args []string, jobs int, progress chan<- float64, activity chan<- app.Event, done, engine chan<- error) tea.Cmd {
+func startBlankCmd(ctx context.Context, args []string, opts app.Options, progress chan<- float64, activity chan<- app.Event, done, engine chan<- error) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
-			err := app.Blank(ctx, args, jobs, progress, activity)
+			err := app.Blank(ctx, args, opts, progress, activity)
 			engine <- err
 			done <- err
 		}()

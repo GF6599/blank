@@ -36,9 +36,9 @@ var (
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
 			if noUI {
-				return runHeadless(args, jobs)
+				return runHeadless(args, app.Options{Jobs: jobs})
 			}
-			return tui.UIStart(args, jobs)
+			return tui.UIStart(args, app.Options{Jobs: jobs})
 		},
 	}
 )
@@ -58,7 +58,7 @@ func Execute() {
 	}
 }
 
-func runHeadless(args []string, jobs int) error {
+func runHeadless(args []string, opts app.Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -86,7 +86,7 @@ func runHeadless(args []string, jobs int) error {
 		}
 	}()
 
-	err := app.Blank(ctx, args, jobs, progressCh, activityCh)
+	err := app.Blank(ctx, args, opts, progressCh, activityCh)
 	wg.Wait()
 	return err
 }
