@@ -73,6 +73,15 @@ func markVisible(width, height int) bool {
 	return width >= markMinWidth && height >= markMinHeight
 }
 
+// The mark degrades to a single line on a small terminal, so a caller budgeting
+// rows around it has to read this rather than assume markRows.
+func markLines(width, height int) int {
+	if markVisible(width, height) {
+		return markRows
+	}
+	return 1
+}
+
 func renderMark(width, height int) string {
 	if !markVisible(width, height) {
 		return markedStyle.Render(wordmark)

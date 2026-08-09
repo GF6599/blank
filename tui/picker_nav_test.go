@@ -125,7 +125,7 @@ func TestMovingDirectoryResetsTheCursorAndTheFilter(t *testing.T) {
 	write(t, filepath.Join(child, "only.txt"))
 
 	m := openPicker(t, root)
-	m = press(t, m, "/", "c", "h", "enter")
+	m.list.SetFilterText("ch")
 	m = cursorOn(t, m, "zz-child")
 
 	// When: the picker descends.

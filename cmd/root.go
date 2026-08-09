@@ -35,9 +35,6 @@ var (
 		// keeps the usage text for a usage error.
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
 			opts := app.Options{Jobs: jobs, Passes: passes}
 			if err := opts.Validate(); err != nil {
 				return err
@@ -49,6 +46,24 @@ var (
 				return err
 			}
 			defer closeLog()
+			if len(args) == 0 {
+				// A selector needs a terminal to draw on and somebody to read
+				// it. Without one, no arguments is a usage question rather than
+				// an invitation to browse.
+				if noUI || !interactive(cmd.InOrStdin()) {
+					return cmd.Help()
+				}
+				picked, pickErr := tui.PickTargets(".")
+				if pickErr != nil {
+					return pickErr
+				}
+				if len(picked) == 0 {
+					// The wording the refused confirmation uses, because both
+					// are the operator declining to destroy anything.
+					return errors.New("cancelled, nothing was destroyed")
+				}
+				args = picked
+			}
 			plan, err := app.Enumerate(args)
 			if err != nil {
 				return err
@@ -92,6 +107,17 @@ func init() {
 		"Targets to overwrite at the same time. Raise it on a faster disk")
 	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,
 		"Random passes over each file before the final zero pass")
+}
+
+// A selector drawn into a pipe is a program waiting for keys that nobody can
+// send, so a run with no terminal on standard input never starts one.
+func interactive(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func Execute() {

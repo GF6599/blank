@@ -3,12 +3,15 @@ package tui
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -88,16 +91,33 @@ func (d entryDelegate) stateCell(e entry) string {
 	return " "
 }
 
+const (
+	// The picker owns the screen while it is up, so it shows more rows than the
+	// activity panel does beside a progress bar.
+	pickerRows = 16
+
+	// A leading blank, a blank under the mark, the status row, a blank, the
+	// title rule, and the listing's bottom rule.
+	pickerChromeRows = 6
+)
+
 type pickerModel struct {
-	list      list.Model
-	dir       string
-	marked    map[string]bool
-	readErr   error
-	quitting  bool
-	confirmed bool
+	list         list.Model
+	dir          string
+	marked       map[string]bool
+	readErr      error
+	quitting     bool
+	confirmed    bool
+	contentWidth int
+	termHeight   int
 }
 
 func newPickerModel(dir string) pickerModel {
+	// filepath.Dir(".") is ".", so a picker holding the name it was given can
+	// never reach the parent of the directory it started in.
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 	marked := map[string]bool{}
 	m := pickerModel{list: newPickerList(marked), dir: dir, marked: marked}
 	m.load(dir)
@@ -158,7 +178,10 @@ func (m pickerModel) Init() tea.Cmd { return nil }
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width, msg.Height)
+		m.termHeight = msg.Height
+		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), minContentWidth)
+		rows := max(min(pickerRows, msg.Height-pickerChromeRows-markLines(m.contentWidth, m.termHeight)), 3)
+		m.list.SetSize(m.contentWidth-2, rows)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -202,7 +225,108 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m pickerModel) View() string { return m.list.View() }
+// The wordings the status row can offer, longest first, in the shape the run
+// screen uses. Quitting is the last thing dropped, because it is how an operator
+// leaves a screen they opened by mistake.
+var pickerControlWordings = []string{
+	"[space] mark  [enter] done  [q] quit",
+	"[enter] done  [q] quit",
+	"[q] quit",
+}
+
+func (m pickerModel) title() string {
+	// frameTop spends two corners, the lead rune and a cell either side of the
+	// label, and it needs one cell of fill left over.
+	return clampTail(m.dir, max(m.contentWidth-6, 0))
+}
+
+// A directory nobody can read looks exactly like an empty one, so the reason
+// takes the row rather than the count that would say nothing.
+func (m pickerModel) statusText() string {
+	switch {
+	case m.list.SettingFilter():
+		return m.list.FilterInput.View()
+	case m.readErr != nil:
+		return failedStyle.Render(failedMark) + " " + m.readErr.Error()
+	default:
+		shown, held := len(m.list.VisibleItems()), len(m.list.Items())
+		position := 0
+		if shown > 0 {
+			position = m.list.Index() + 1
+		}
+		if shown != held {
+			// An applied filter looks exactly like a small directory, so the
+			// count it hid is named rather than left to be discovered.
+			return fmt.Sprintf("%d/%d of %d  %d marked", position, shown, held, len(m.marked))
+		}
+		return fmt.Sprintf("%d/%d  %d marked", position, held, len(m.marked))
+	}
+}
+
+func (m pickerModel) statusRow() string {
+	left := m.statusText()
+	var controls string
+	for _, wording := range pickerControlWordings {
+		if m.contentWidth-lipgloss.Width(left)-controlsGap >= lipgloss.Width(wording) {
+			controls = wording
+			break
+		}
+	}
+	if controls == "" {
+		// The tail, because the one status this row cannot fit is a read
+		// failure and the reason it failed is the end of that sentence.
+		return statusStyle.Render(clampTail(left, m.contentWidth))
+	}
+	gap := max(m.contentWidth-lipgloss.Width(left)-lipgloss.Width(controls), 1)
+	return statusStyle.Render(left) + strings.Repeat(" ", gap) + renderControls(controls)
+}
+
+// Every block shares one content column, the way the run screen builds its own.
+func (m pickerModel) View() string {
+	pad := strings.Repeat(" ", padding)
+	var b strings.Builder
+
+	b.WriteString("\n")
+	for _, line := range strings.Split(renderMark(m.contentWidth, m.termHeight), "\n") {
+		b.WriteString(pad)
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	b.WriteString(pad)
+	b.WriteString(m.statusRow())
+	b.WriteString("\n\n")
+
+	b.WriteString(pad)
+	b.WriteString(frameTop(m.contentWidth, m.title()))
+	b.WriteString("\n")
+	b.WriteString(viewportWrapperStyle.Render(panelSides.Render(m.listBody())))
+	return b.String()
+}
+
+// The listing pads its own rows and its empty state does not, so a directory
+// holding nothing would draw a frame the width of the words inside it.
+func (m pickerModel) listBody() string {
+	inner := m.contentWidth - 2
+	rows := strings.Split(m.list.View(), "\n")
+	for i, row := range rows {
+		rows[i] = padCells(clampHead(row, inner), inner)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// PickTargets runs the selector and returns the paths the operator marked, in a
+// stable order. It returns nothing when the operator quit rather than confirmed,
+// which is the same answer as marking nothing at all.
+func PickTargets(start string) ([]string, error) {
+	final, err := tea.NewProgram(newPickerModel(start)).Run()
+	if err != nil {
+		slog.Error("Selector error", "ERR", err)
+		return nil, fmt.Errorf("selector failed: %w", err)
+	}
+	return final.(pickerModel).targets(), nil
+}
 
 // The filter stays on, because it is the reason this is a list rather than the
 // viewport the activity panel uses.
@@ -210,8 +334,12 @@ func newPickerList(marked map[string]bool) list.Model {
 	l := list.New(nil, entryDelegate{marked: marked}, 0, 0)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
+	// The status row above the frame draws the filter input, so leaving this on
+	// spends a row of the listing on a second copy of it.
+	l.SetShowFilter(false)
 	l.SetShowPagination(false)
 	l.SetShowHelp(false)
+	l.SetStatusBarItemName("entry", "entries")
 	l.DisableQuitKeybindings()
 	// textinput binds ctrl+v to a clipboard read, which execs pbpaste on macOS
 	// and xclip elsewhere. Every other thing blank does is a standard library

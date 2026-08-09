@@ -83,6 +83,33 @@ func TestHelpNamesTheHeadlessMode(t *testing.T) {
 	}
 }
 
+// No arguments and no terminal is a usage question, not a selector.
+// Given a run with nothing on the command line and a pipe on standard input,
+// when it starts, then it prints the usage and exits without waiting.
+// Why it matters: the selector reads keystrokes, so a script or a cron job that
+// calls blank with no arguments would block for ever on a screen nobody can see
+// and nobody can answer.
+func TestNoArgumentsWithoutATerminalPrintsTheUsage(t *testing.T) {
+	for _, args := range [][]string{{}, {"--no-ui"}, {"--yes"}} {
+		t.Run(strings.Join(append([]string{"blank"}, args...), " "), func(t *testing.T) {
+			// When: the binary runs with a pipe on standard input.
+			out, code := run(t, args...)
+
+			// Then: it exits clean, having printed the usage.
+			if code != 0 {
+				t.Fatalf("exited %d:\n%s", code, out)
+			}
+			if !strings.Contains(out, "Usage:") {
+				t.Fatalf("no usage in the output:\n%s", out)
+			}
+			// And: it did not draw a selector into the pipe.
+			if strings.Contains(out, "marked") {
+				t.Fatalf("a selector was drawn with no terminal to draw on:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestHeadlessCLIShredsFiles(t *testing.T) {
 	dataDir := t.TempDir()
 	target := filepath.Join(dataDir, "secret.txt")

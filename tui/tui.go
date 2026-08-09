@@ -171,7 +171,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = m.contentWidth - 2 - scrollbarCells
 		m.progress.Width = m.contentWidth - reservedForControls(m.contentWidth)
 
-		m.viewport.Height = max(min(activityRows, msg.Height-chromeRows-m.markLines()), 3)
+		m.viewport.Height = max(min(activityRows, msg.Height-chromeRows-markLines(m.contentWidth, m.termHeight)), 3)
 		m.viewport.SetContent(m.activityView())
 		return m, nil
 
@@ -235,15 +235,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-}
-
-// The mark degrades to a single line on a small terminal, so the viewport height
-// has to read this rather than assume markRows.
-func (m model) markLines() int {
-	if markVisible(m.contentWidth, m.termHeight) {
-		return markRows
-	}
-	return 1
 }
 
 // note appends a target the run has reached, or settles one it already holds.
