@@ -112,13 +112,15 @@ exit code cannot disagree.
 | `blanking` | The run is still going. |
 | `blanking complete` | 0. Every target was destroyed. |
 | `blanking failed, 2 targets survived` | 1. The error names them on stderr. |
-| `blanking cancelled` | The run stopped before it finished. |
+| `blanking cancelled` | 1. Every target it did not reach is named on stderr. |
 
 Read the exit code rather than the progress bar. The bar counts targets attempted rather
 than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
 
-Only a run that destroyed every target exits 0. A refused question, a refused path, and a
-log that could not be opened all exit non-zero having destroyed nothing.
+Only a run that destroyed every target exits 0. A cancelled run exits non-zero and names
+what it stopped short of, because everything behind the stop is still on disk. A refused
+question, a refused path, and a log that could not be opened all exit non-zero having
+destroyed nothing.
 
 ## Requirements
 
