@@ -64,6 +64,25 @@ func runWithInput(t *testing.T, stdin string, args ...string) (string, int) {
 	}
 }
 
+// The help names the mode a script reads.
+// Given the help text, when it renders, then --no-ui is in it.
+// Why it matters: --no-ui is the only mode that prints one plain line per
+// target, and a hidden flag is one a caller can find only by reading the
+// source of the tool they are scripting.
+func TestHelpNamesTheHeadlessMode(t *testing.T) {
+	// When: the help renders.
+	out, code := run(t, "--help")
+
+	// Then: it exits clean.
+	if code != 0 {
+		t.Fatalf("--help exited %d:\n%s", code, out)
+	}
+	// And: it names the flag.
+	if !strings.Contains(out, "--no-ui") {
+		t.Fatalf("the help does not name --no-ui:\n%s", out)
+	}
+}
+
 func TestHeadlessCLIShredsFiles(t *testing.T) {
 	dataDir := t.TempDir()
 	target := filepath.Join(dataDir, "secret.txt")

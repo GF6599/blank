@@ -79,7 +79,8 @@ var (
 )
 
 func init() {
-	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
+	rootCmd.Flags().BoolVar(&noUI, "no-ui", false,
+		"Turn off the terminal interface and print one line per target to stdout")
 	rootCmd.Flags().StringVar(&logPath, "log", "",
 		"Write the run log to this path. It names every file destroyed, so it is a manifest of what was on the disk")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be destroyed and destroy nothing")
@@ -88,7 +89,6 @@ func init() {
 		"Targets to overwrite at the same time. Raise it on a faster disk")
 	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,
 		"Random passes over each file before the final zero pass")
-	_ = rootCmd.Flags().MarkHidden("no-ui")
 }
 
 func Execute() {

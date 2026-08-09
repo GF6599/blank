@@ -193,7 +193,7 @@ row.
 | `--jobs` | Targets to overwrite at the same time. Default 16. Below 1 is refused. |
 | `--passes` | Random covers over each file before the zero cover. Default 10. Below 0 is refused. |
 | `--log <path>` | Write the run log to this path. Off by default. |
-| `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
+| `--no-ui` | Turn off the terminal interface and print one line per target to stdout. |
 
 The work is disk bound, so the best `--jobs` value belongs to the device and not to the
 processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms, 8 took
