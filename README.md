@@ -16,7 +16,10 @@ then removes every directory.
 ```mermaid
 graph TD
     A[main.go] --> B[cmd: Cobra root command]
-    B --> C{--no-ui}
+    B --> S{arguments given}
+    S -->|no| P[tui: selector]
+    S -->|yes| C
+    P -->|the marked set| C{--no-ui}
     C -->|off| D[tui: Bubble Tea interface]
     C -->|on| E[stdout printer]
     D --> F[app: deletion engine]
@@ -119,8 +122,8 @@ than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
 
 Only a run that destroyed every target exits 0. A cancelled run exits non-zero and names
 what it stopped short of, because everything behind the stop is still on disk. A refused
-question, a refused path, and a log that could not be opened all exit non-zero having
-destroyed nothing.
+question, a refused path, a selector left with nothing marked, and a log that could not be
+opened all exit non-zero having destroyed nothing.
 
 ## Requirements
 
@@ -154,6 +157,52 @@ blk ./notes.txt ./old-project
 Check the aim with `--dry-run` first. The run then asks before it destroys anything, and
 `--yes` skips the question for a script.
 
+### Choosing targets without naming them
+
+Run `blk` with no arguments and it opens a selector on the working directory. Mark what you
+want, press `enter`, and the marked set becomes the arguments. Everything after that is the
+same: the same guard, the same plan, and the same question before anything is destroyed.
+
+```console
+$ blk
+  1/22  2 marked                          [space] mark  [enter] done  [q] quit
+
+  ┌─ /home/dev/old-project ──────────────────────────────────────────────────┐
+  │[ * notes.txt                                                            ]│
+  │    archive/                                                              │
+  │  * keys/                                                                 │
+  │  - Library/                                                              │
+  └──────────────────────────────────────────────────────────────────────────┘
+```
+
+| Cell | Meaning |
+| --- | --- |
+| `*` | Marked. The run will destroy this. |
+| `-` | Refused. This is a protected path, so no key marks it. |
+| blank | Not marked. |
+
+A name ending in `/` is a directory, and marking one destroys everything under it. A name
+ending in `@` is a symlink, and marking one destroys the link and never what it points at.
+
+| Key | Action |
+| --- | --- |
+| `space` | Mark or unmark the entry under the cursor |
+| `l`, `right` | Go into the directory under the cursor |
+| `h`, `left`, `backspace` | Go up one directory |
+| `j`, `k`, `up`, `down` | Move the cursor |
+| `/` | Filter this directory by name |
+| `enter` | Done. Hand the marked set to the run |
+| `q`, `ctrl+c` | Quit. Destroy nothing |
+| `esc` | Clear the filter, or quit when there is none |
+
+A mark holds while you browse, so targets in several directories go to one run. The count
+beside the position says how many are marked, and a filter reports how much of the
+directory it is hiding.
+
+The selector needs a terminal. With `--no-ui`, or with anything other than a terminal on
+standard input, `blk` with no arguments prints the usage instead, so a script never waits
+on a screen nobody can answer.
+
 The interface renders inline rather than taking over the screen, so the final frame stays
 in your scrollback after the program exits. The activity panel holds the last 200 lines
 and scrolls. Pass `--log <path>` when you want the full manifest of a larger run.
@@ -174,7 +223,9 @@ needs reading. The panel shows as many rows in flight as `--jobs` allows.
 
 | Key | Action |
 | --- | --- |
-| `q`, `esc`, `ctrl+c` | Cancel the run and quit |
+| `q`, `ctrl+c` | Cancel the run and quit |
+| `esc` | Clear the filter, or cancel the run when there is none |
+| `/` | Filter the activity panel by name |
 | `k`, `up` | Scroll the activity panel up one line |
 | `j`, `down` | Scroll the activity panel down one line |
 | `b`, `pgup` | Scroll up half a page |
@@ -184,7 +235,13 @@ The panel follows the newest row until you scroll away from it. It then holds wh
 left it for the rest of the run, and it follows again once you scroll back to the newest
 row.
 
-`ctrl+c` cancels the context. Files already overwritten stay destroyed.
+The filter narrows what the panel draws and never what the run does. Rows still settle
+behind it, and the status line still counts every target that survived, so the verdict is
+the same whether you are filtering or not. The panel title carries the filter and both
+counts, because a filtered panel otherwise reads as a short run.
+
+`ctrl+c` cancels the context, whether or not the filter is open. Files already overwritten
+stay destroyed.
 
 ### Flags
 
@@ -221,6 +278,12 @@ These are properties of the current implementation. Each one is reproducible.
   data somewhere else and leave the old blocks intact. A snapshot, a journal, or a backup
   keeps its own copy either way. This limit is the storage layer's, not the tool's, and no
   number of passes removes it. Full disk encryption is the answer that does.
+- **The selector does not go into a symlink.** The engine unlinks a symlink and never reads
+  through one, so the selector reads it the same way and the arrow key does nothing on one.
+  Name the path on the command line to reach what is behind it.
+- **The selector reads a large directory in one go.** A directory of 10,000 entries took
+  117ms to list on an NVMe disk, because every entry is checked against the protected paths
+  as it is read. Nothing is drawn until that finishes.
 - **The protected path guard resolves symlinks, but not mount points.** It reads the path
   you typed, and the same path with every symlink above the last component resolved,
   against a list and against your home directory. A bind mount of a system path inside
@@ -261,6 +324,7 @@ just e2e      # generate a dummy tree, destroy it, and check what survived
 ├── app/guard.go            # The paths a run refuses to destroy.
 ├── app/overwrite.go        # Destroys one file: the covers, the rename, the unlink.
 ├── tui/tui.go              # Bubble Tea model: state, sizing, layout.
+├── tui/picker.go           # The selector a run with no arguments opens.
 ├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
 ├── utils/gen-dummy-df.py   # Generates a dummy tree for `just e2e`.
 ├── justfile                # Every task.
