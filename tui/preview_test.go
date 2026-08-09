@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -75,12 +76,41 @@ func TestPreviewRender(t *testing.T) {
 		{"wide-120x40", 120, 40, 1.0, logs, true},
 		{"scrolled-80x24", 80, 24, 0.5, deep, false},
 	} {
-		m := previewModel(t, tc.w, tc.h, tc.pct, tc.logs, tc.done)
-		var b strings.Builder
-		fmt.Fprintf(&b, "\n=== %s (declared %dx%d) ===\n", tc.name, tc.w, tc.h)
-		for i, line := range strings.Split(m.View(), "\n") {
-			fmt.Fprintf(&b, "%2d |%s|\n", i, line)
-		}
-		t.Log(b.String())
+		logFrame(t, tc.name, tc.w, tc.h, previewModel(t, tc.w, tc.h, tc.pct, tc.logs, tc.done).View())
 	}
+}
+
+// The state machine tests prove the verdict. Only a render shows whether the
+// wording carrying it still fits the screen.
+func TestPreviewFailedFrame(t *testing.T) {
+	rows := demoRows(
+		"Overwriting /data/locked/held.bin",
+		"Overwriting /data/notes.txt",
+		"Deleting directory /data/locked",
+	)
+	survived := &app.IncompleteRun{Failures: []app.Failure{
+		{Path: "/data/locked/held.bin", Err: errors.New("permission denied")},
+		{Path: "/data/locked", Err: errors.New("directory not empty")},
+	}}
+	for _, tc := range []struct {
+		name string
+		w, h int
+	}{
+		{"failed-narrowest", 12, 20},
+		{"failed-standard", 80, 24},
+	} {
+		var cur tea.Model = previewModel(t, tc.w, tc.h, 1, rows, true)
+		cur, _ = cur.Update(engineDoneMsg{err: survived})
+		logFrame(t, tc.name, tc.w, tc.h, cur.(model).View())
+	}
+}
+
+func logFrame(t *testing.T, name string, w, h int, view string) {
+	t.Helper()
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n=== %s (declared %dx%d) ===\n", name, w, h)
+	for i, line := range strings.Split(view, "\n") {
+		fmt.Fprintf(&b, "%2d |%s|\n", i, line)
+	}
+	t.Log(b.String())
 }
