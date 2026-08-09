@@ -33,9 +33,14 @@ func stagesFor(events []Event, path string) []Stage {
 	return out
 }
 
-// runBlank drives the engine with a collector on each channel, so a test reads
-// the outcome without repeating the fan-in.
 func runBlank(t *testing.T, args ...string) result {
+	t.Helper()
+	return runBlankWithJobs(t, DefaultJobs, args...)
+}
+
+// runBlankWithJobs drives the engine with a collector on each channel, so a test
+// reads the outcome without repeating the fan-in.
+func runBlankWithJobs(t *testing.T, jobs int, args ...string) result {
 	t.Helper()
 	progressCh := make(chan float64)
 	activityCh := make(chan Event)
@@ -56,9 +61,82 @@ func runBlank(t *testing.T, args ...string) result {
 		}
 	}()
 
-	res.err = Blank(context.Background(), args, progressCh, activityCh)
+	res.err = Blank(context.Background(), args, jobs, progressCh, activityCh)
 	wg.Wait()
 	return res
+}
+
+// The pool never runs more targets at once than it was told to.
+// Given more files than the limit allows, when the run finishes, then the number
+// of targets in flight never passed the limit.
+// Why it matters: every target in flight is an open overwrite of a real file, so
+// an unbounded pool starts hundreds at once. That thrashes the disk, and it fills
+// the panel in one instant with rows nobody can read as they settle.
+func TestJobsBoundsTheTargetsInFlight(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	for _, jobs := range []int{1, 4} {
+		t.Run(fmt.Sprintf("jobs=%d", jobs), func(t *testing.T) {
+			// Given: many more files than the limit allows in flight.
+			root := t.TempDir()
+			for i := range 24 {
+				p := filepath.Join(root, fmt.Sprintf("file-%02d.bin", i))
+				if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+					t.Fatalf("writing %s: %v", p, err)
+				}
+			}
+
+			// When: the run finishes.
+			res := runBlankWithJobs(t, jobs, root)
+			if res.err != nil {
+				t.Fatalf("expected a clean run, got %v", res.err)
+			}
+
+			// Then: counting the stream up on a start and down on a settle never
+			// passes the limit, because a settle is what frees a worker.
+			live, peak := 0, 0
+			for _, e := range res.activity {
+				if e.Stage == StageStart {
+					live++
+					peak = max(peak, live)
+					continue
+				}
+				live--
+			}
+			if peak > jobs {
+				t.Fatalf("%d targets ran at once, the limit was %d", peak, jobs)
+			}
+		})
+	}
+}
+
+// A pool of no workers is refused rather than quietly corrected.
+// Given a jobs count below one, when the run is asked to start, then it returns
+// an error and touches nothing.
+// Why it matters: a count of zero queues every file against no worker at all, so
+// the run would hang holding a list of files it reports as in progress.
+func TestJobsBelowOneIsRefused(t *testing.T) {
+	// Given: a file that must survive being named as a target.
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the victim: %v", err)
+	}
+
+	// When: the run is asked for a pool of no workers.
+	res := runBlankWithJobs(t, 0, root)
+
+	// Then: it refuses, naming the count it was given.
+	if res.err == nil {
+		t.Fatal("a pool of no workers was accepted")
+	}
+	if !strings.Contains(res.err.Error(), "jobs") {
+		t.Fatalf("the error does not name the setting: %v", res.err)
+	}
+	// And: the file is still there, because nothing ran.
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("expected %s to survive a refused run: %v", victim, err)
+	}
 }
 
 func TestBlankEmitsProgressAndActivity(t *testing.T) {
@@ -335,15 +413,15 @@ func TestBlankBoundsItsGoroutines(t *testing.T) {
 	testsupport.SetupStubCommands(t)
 
 	// Given / When: two runs whose file counts differ by a factor of four.
-	small := peakGoroutines(t, shredConcurrency*2)
-	large := peakGoroutines(t, shredConcurrency*8)
+	small := peakGoroutines(t, DefaultJobs*2)
+	large := peakGoroutines(t, DefaultJobs*8)
 
 	// Then: the peak tracks the concurrency limit, not the file count. Comparing
 	// the two runs avoids pinning a number, which would only describe how many
 	// goroutines os/exec happens to use per command today.
-	if large > small+shredConcurrency {
+	if large > small+DefaultJobs {
 		t.Fatalf("peak goroutines grew with the tree: %d for %d files, %d for %d files",
-			small, shredConcurrency*2, large, shredConcurrency*8)
+			small, DefaultJobs*2, large, DefaultJobs*8)
 	}
 }
 

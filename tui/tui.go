@@ -62,6 +62,7 @@ type model struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	args         []string
+	jobs         int
 	progressCh   chan float64
 	activityCh   chan app.Event
 	done         chan error
@@ -77,7 +78,7 @@ var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 // UIStart boots the Bubble Tea UI and captures keyboard shortcuts for quitting
 // or scrolling the activity viewport. It returns the engine's own error, and it
 // does not return before the engine stops.
-func UIStart(args []string) error {
+func UIStart(args []string, jobs int) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
 	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
@@ -92,6 +93,7 @@ func UIStart(args []string) error {
 		ctx:        ctx,
 		cancel:     cancel,
 		args:       args,
+		jobs:       jobs,
 		progressCh: make(chan float64),
 		activityCh: make(chan app.Event),
 		done:       make(chan error, 1),
@@ -113,7 +115,7 @@ func UIStart(args []string) error {
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startBlankCmd(m.ctx, m.args, m.progressCh, m.activityCh, m.done),
+		startBlankCmd(m.ctx, m.args, m.jobs, m.progressCh, m.activityCh, m.done),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
 	)
@@ -309,9 +311,9 @@ func (m model) View() string {
 	return b.String()
 }
 
-func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- app.Event, done chan<- error) tea.Cmd {
+func startBlankCmd(ctx context.Context, args []string, jobs int, progress chan<- float64, activity chan<- app.Event, done chan<- error) tea.Cmd {
 	return func() tea.Msg {
-		go func() { done <- app.Blank(ctx, args, progress, activity) }()
+		go func() { done <- app.Blank(ctx, args, jobs, progress, activity) }()
 		return nil
 	}
 }

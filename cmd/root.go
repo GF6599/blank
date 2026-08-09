@@ -18,6 +18,7 @@ import (
 var (
 	noUI      bool
 	logToFile bool
+	jobs      int
 	rootCmd   = &cobra.Command{
 		Use:   "blank [file|dir]...",
 		Short: "Destroy files and directories beyond recovery.",
@@ -35,9 +36,9 @@ var (
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
 			if noUI {
-				return runHeadless(args)
+				return runHeadless(args, jobs)
 			}
-			return tui.UIStart(args)
+			return tui.UIStart(args, jobs)
 		},
 	}
 )
@@ -45,6 +46,8 @@ var (
 func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
 	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
+	rootCmd.Flags().IntVar(&jobs, "jobs", app.DefaultJobs,
+		"Targets to overwrite at the same time. Raise it on a faster disk")
 	_ = rootCmd.Flags().MarkHidden("no-ui")
 }
 
@@ -55,7 +58,7 @@ func Execute() {
 	}
 }
 
-func runHeadless(args []string) error {
+func runHeadless(args []string, jobs int) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -83,7 +86,7 @@ func runHeadless(args []string) error {
 		}
 	}()
 
-	err := app.Blank(ctx, args, progressCh, activityCh)
+	err := app.Blank(ctx, args, jobs, progressCh, activityCh)
 	wg.Wait()
 	return err
 }
