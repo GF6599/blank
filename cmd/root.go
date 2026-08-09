@@ -19,10 +19,11 @@ var (
 	noUI      bool
 	logToFile bool
 	jobs      int
+	passes    int
 	rootCmd   = &cobra.Command{
 		Use:   "blank [file|dir]...",
 		Short: "Destroy files and directories beyond recovery.",
-		Long: "blank overwrites every file 10 times with random data and once with zeros, " +
+		Long: "blank overwrites every file with random data, then once with zeros, " +
 			"then removes the directories it walked. Deletion is permanent.",
 		// A failure has to reach the exit code, so the command returns it and
 		// keeps the usage text for a usage error.
@@ -36,9 +37,9 @@ var (
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
 			if noUI {
-				return runHeadless(args, app.Options{Jobs: jobs})
+				return runHeadless(args, app.Options{Jobs: jobs, Passes: passes})
 			}
-			return tui.UIStart(args, app.Options{Jobs: jobs})
+			return tui.UIStart(args, app.Options{Jobs: jobs, Passes: passes})
 		},
 	}
 )
@@ -48,6 +49,8 @@ func init() {
 	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
 	rootCmd.Flags().IntVar(&jobs, "jobs", app.DefaultJobs,
 		"Targets to overwrite at the same time. Raise it on a faster disk")
+	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,
+		"Random passes over each file before the final zero pass")
 	_ = rootCmd.Flags().MarkHidden("no-ui")
 }
 

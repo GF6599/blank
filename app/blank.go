@@ -32,9 +32,12 @@ type (
 // 8 took 143ms, 100 took 177ms, and 4 took 216ms.
 const DefaultJobs = 16
 
+// DefaultPasses is how many random covers each file gets before the zero cover,
+// matching what `shred -uzfn 10` performed when the overwrite was a subprocess.
+const DefaultPasses = 10
+
 var (
-	shredBinary = "shred"
-	rmBinary    = "rm"
+	rmBinary = "rm"
 	// A listing failure is the one fault the filesystem cannot be made to
 	// produce on demand, so the walk reads the directory through this.
 	readDir = os.ReadDir
@@ -204,21 +207,22 @@ func classify(path string) (kind, error) {
 type Options struct {
 	// Jobs is how many targets are worked on at the same time.
 	Jobs int
+	// Passes is how many random covers a file gets before the zero cover.
+	Passes int
 }
 
 // Blank expands CLI arguments, walks directories, and securely deletes each
 // item while streaming progress percentages and human-readable activity
 // updates. It returns an error naming every target that survived.
 func Blank(ctx context.Context, args []string, opts Options, progress chan<- float64, activity chan<- Event) error {
-	jobs := opts.Jobs
-	// Refused rather than clamped, because a pool of no workers queues every file
-	// against nothing and the run hangs reporting them all as in progress.
-	if jobs < 1 {
+	// Refused rather than clamped, and refused here rather than per target, so a
+	// bad value stops the run before it destroys anything.
+	if err := opts.validate(); err != nil {
 		close(progress)
 		if activity != nil {
 			close(activity)
 		}
-		return fmt.Errorf("jobs must be at least 1, got %d", jobs)
+		return err
 	}
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
@@ -253,7 +257,7 @@ func Blank(ctx context.Context, args []string, opts Options, progress chan<- flo
 		return fails.err()
 	}
 	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
-	concurrentShred(ctx, w, jobs, fails, progress, activity)
+	concurrentShred(ctx, w, opts, fails, progress, activity)
 	if err := fails.err(); err != nil {
 		return err
 	}
@@ -280,18 +284,9 @@ func shredDir(ctx context.Context, d directory) error {
 	return nil
 }
 
-// shredFile overwrites and removes a file by calling the system `shred` command.
-func shredFile(ctx context.Context, f file) error {
-	cmd := exec.CommandContext(ctx, shredBinary, "-uzfn", "10", string(f))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("shred failed: %w (output: %s)", err, string(out))
-	}
-	return nil
-}
-
 // concurrentShred fans work out to a fixed pool of workers, and emits live
 // progress plus optional activity updates.
-func concurrentShred(ctx context.Context, w *work, jobs int, fails *failures, progress chan<- float64, activity chan<- Event) {
+func concurrentShred(ctx context.Context, w *work, opts Options, fails *failures, progress chan<- float64, activity chan<- Event) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -351,7 +346,7 @@ func concurrentShred(ctx context.Context, w *work, jobs int, fails *failures, pr
 	// A semaphore bounds the work in flight but not the goroutines, so a large
 	// tree used to allocate a stack for every file before any overwrite began.
 	queue := make(chan file)
-	for range min(jobs, len(w.files)) {
+	for range min(opts.Jobs, len(w.files)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -360,14 +355,7 @@ func concurrentShred(ctx context.Context, w *work, jobs int, fails *failures, pr
 					return
 				}
 				runTarget(verbFile, string(f), func() error {
-					err := shredFile(ctx, f)
-					if err == nil {
-						return nil
-					}
-					if stat, serr := os.Stat(string(f)); serr == nil {
-						err = fmt.Errorf("%w (mode %s)", err, stat.Mode())
-					}
-					return err
+					return overwriteFile(ctx, string(f), opts.Passes)
 				})
 				update()
 			}
@@ -431,4 +419,16 @@ func walk(w *work, fails *failures, dir string) {
 			w.files = append(w.files, file(fp))
 		}
 	}
+}
+
+func (o Options) validate() error {
+	if o.Jobs < 1 {
+		// A pool of no workers queues every file against nothing, and the run
+		// hangs reporting them all as in progress.
+		return fmt.Errorf("jobs must be at least 1, got %d", o.Jobs)
+	}
+	if o.Passes < 0 {
+		return fmt.Errorf("passes cannot be negative, got %d", o.Passes)
+	}
+	return nil
 }

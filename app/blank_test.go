@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -34,14 +35,47 @@ func stagesFor(events []Event, path string) []Stage {
 	return out
 }
 
+// sealDir denies writes to dir, which fails the rename that ends an overwrite.
+// It is the portable way to make one fail now that the overwrite is native: the
+// file still opens and the passes still run, and only the directory entry
+// cannot be changed.
+func sealDir(t *testing.T, dir string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root ignores the directory mode this relies on")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("sealing %s: %v", dir, err)
+	}
+	// Restores before the TempDir cleanup registered earlier, which would
+	// otherwise fail to remove the sealed directory.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+}
+
+// keepContents hardlinks path into a directory the run will not touch, so a test
+// can read the bytes after the run has unlinked the name.
+func keepContents(t *testing.T, path string) string {
+	t.Helper()
+	kept := filepath.Join(t.TempDir(), "witness")
+	if err := os.Link(path, kept); err != nil {
+		t.Fatalf("hardlinking %s: %v", path, err)
+	}
+	return kept
+}
+
 func runBlank(t *testing.T, args ...string) result {
 	t.Helper()
 	return runBlankWithJobs(t, DefaultJobs, args...)
 }
 
-// runBlankWithJobs drives the engine with a collector on each channel, so a test
-// reads the outcome without repeating the fan-in.
 func runBlankWithJobs(t *testing.T, jobs int, args ...string) result {
+	t.Helper()
+	return runBlankWith(t, Options{Jobs: jobs, Passes: DefaultPasses}, args...)
+}
+
+// runBlankWith drives the engine with a collector on each channel, so a test
+// reads the outcome without repeating the fan-in.
+func runBlankWith(t *testing.T, opts Options, args ...string) result {
 	t.Helper()
 	progressCh := make(chan float64)
 	activityCh := make(chan Event)
@@ -62,7 +96,7 @@ func runBlankWithJobs(t *testing.T, jobs int, args ...string) result {
 		}
 	}()
 
-	res.err = Blank(context.Background(), args, Options{Jobs: jobs}, progressCh, activityCh)
+	res.err = Blank(context.Background(), args, opts, progressCh, activityCh)
 	wg.Wait()
 	return res
 }
@@ -141,7 +175,7 @@ func TestJobsBelowOneIsRefused(t *testing.T) {
 }
 
 func TestBlankEmitsProgressAndActivity(t *testing.T) {
-	logFile := testsupport.SetupStubCommands(t)
+	testsupport.SetupStubCommands(t)
 
 	root := t.TempDir()
 	file1 := filepath.Join(root, "alpha.txt")
@@ -160,6 +194,8 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	if err := os.Symlink(file1, symlink); err != nil {
 		t.Fatalf("creating symlink: %v", err)
 	}
+
+	kept := keepContents(t, file1)
 
 	res := runBlank(t, root)
 
@@ -183,12 +219,12 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 		t.Fatalf("expected symlink to be removed, err=%v", err)
 	}
 
-	data, err := os.ReadFile(logFile)
+	body, err := os.ReadFile(kept)
 	if err != nil {
-		t.Fatalf("reading stub log: %v", err)
+		t.Fatalf("reading the kept contents: %v", err)
 	}
-	if !strings.Contains(string(data), "shred "+file1) {
-		t.Fatalf("expected shred log for %s, got %s", file1, string(data))
+	if i := bytes.IndexFunc(body, func(r rune) bool { return r != 0 }); i >= 0 {
+		t.Fatalf("byte %d of %s is %#x, so the contents were never overwritten", i, file1, body[i])
 	}
 }
 
@@ -248,7 +284,7 @@ func TestBlankReportsAnUnreadableDirectory(t *testing.T) {
 // whether or not the walk ever saw them, so a swallowed listing error destroys
 // files without overwriting them and reports a clean run.
 func TestBlankReportsADirectoryItCannotList(t *testing.T) {
-	logFile := testsupport.SetupStubCommands(t)
+	testsupport.SetupStubCommands(t)
 
 	// Given: an ordinary tree that rm can remove without trouble.
 	root := t.TempDir()
@@ -271,6 +307,8 @@ func TestBlankReportsADirectoryItCannotList(t *testing.T) {
 	}
 	t.Cleanup(func() { readDir = real })
 
+	kept := keepContents(t, inside)
+
 	// When: the run finishes.
 	res := runBlank(t, root)
 
@@ -283,12 +321,12 @@ func TestBlankReportsADirectoryItCannotList(t *testing.T) {
 	}
 	// And: the file inside was removed without ever being overwritten, which is
 	// the data loss the error exists to announce.
-	data, err := os.ReadFile(logFile)
+	body, err := os.ReadFile(kept)
 	if err != nil {
-		t.Fatalf("reading stub log: %v", err)
+		t.Fatalf("reading the kept contents: %v", err)
 	}
-	if strings.Contains(string(data), "shred "+inside) {
-		t.Fatalf("expected %s never to reach shred, got %s", inside, string(data))
+	if string(body) != "payload" {
+		t.Fatalf("expected %s never to be overwritten, its contents are now %q", inside, body)
 	}
 }
 
@@ -300,19 +338,21 @@ func TestBlankReportsADirectoryItCannotList(t *testing.T) {
 func TestBlankReportsAFailedOverwrite(t *testing.T) {
 	testsupport.SetupStubCommands(t)
 
-	// Given: two files, one of which the overwrite refuses.
+	// Given: one ordinary file, and one in a directory that will not accept the
+	// rename that ends an overwrite.
 	root := t.TempDir()
+	sealed := t.TempDir()
 	doomed := filepath.Join(root, "ordinary.txt")
-	stubborn := filepath.Join(root, "refuses.txt")
+	stubborn := filepath.Join(sealed, "refuses.txt")
 	for _, p := range []string{doomed, stubborn} {
 		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
 			t.Fatalf("writing %s: %v", p, err)
 		}
 	}
-	t.Setenv(testsupport.FailMarker, "refuses.txt")
+	sealDir(t, sealed)
 
 	// When: the run finishes.
-	res := runBlank(t, root)
+	res := runBlank(t, root, sealed)
 
 	// Then: it names the file the overwrite could not destroy.
 	if res.err == nil {
@@ -336,19 +376,21 @@ func TestBlankReportsAFailedOverwrite(t *testing.T) {
 func TestBlankReportsTheOutcomeOfEachTarget(t *testing.T) {
 	testsupport.SetupStubCommands(t)
 
-	// Given: two files, one of which the overwrite refuses.
+	// Given: one ordinary file, and one in a directory that will not accept the
+	// rename that ends an overwrite.
 	root := t.TempDir()
+	sealed := t.TempDir()
 	ordinary := filepath.Join(root, "ordinary.txt")
-	stubborn := filepath.Join(root, "refuses.txt")
+	stubborn := filepath.Join(sealed, "refuses.txt")
 	for _, p := range []string{ordinary, stubborn} {
 		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
 			t.Fatalf("writing %s: %v", p, err)
 		}
 	}
-	t.Setenv(testsupport.FailMarker, "refuses.txt")
+	sealDir(t, sealed)
 
 	// When: the run finishes.
-	res := runBlank(t, root)
+	res := runBlank(t, root, sealed)
 
 	// Then: the file that overwrote is reported as done, and only once it is.
 	if got := stagesFor(res.activity, ordinary); !slices.Equal(got, []Stage{StageStart, StageDone}) {
@@ -442,7 +484,7 @@ func TestBlankEscapesControlCharactersInNames(t *testing.T) {
 	if err := os.WriteFile(nasty, []byte("payload"), 0o600); err != nil {
 		t.Fatalf("writing the crafted file: %v", err)
 	}
-	t.Setenv(testsupport.FailMarker, "evil")
+	sealDir(t, root)
 
 	// When: the run reports it, both as activity and as a survivor.
 	res := runBlank(t, root)
@@ -496,25 +538,6 @@ func TestBlankReportsAMissingArgument(t *testing.T) {
 	}
 }
 
-// shredded reports the paths the run handed to the overwrite.
-func shredded(t *testing.T, logFile string) []string {
-	t.Helper()
-	data, err := os.ReadFile(logFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		t.Fatalf("reading stub log: %v", err)
-	}
-	var out []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if after, ok := strings.CutPrefix(line, "shred "); ok {
-			out = append(out, after)
-		}
-	}
-	return out
-}
-
 // A symlink named on the command line is unlinked, never followed.
 // Given a symlink argument pointing at a file the caller did not name, when the
 // run finishes, then the link is gone and the file it pointed at is untouched.
@@ -522,7 +545,7 @@ func shredded(t *testing.T, logFile string) []string {
 // somewhere else on disk and the run still reports success. That is the tool
 // destroying data nobody asked it to destroy.
 func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
-	log := testsupport.SetupStubCommands(t)
+	testsupport.SetupStubCommands(t)
 
 	// Given: a symlink to a file the run is not asked to destroy.
 	root := t.TempDir()
@@ -547,10 +570,6 @@ func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
 	if !slices.Equal(got, payload) {
 		t.Fatalf("the target was overwritten: got %q, want %q", got, payload)
 	}
-	// And: the overwrite was never pointed at it.
-	if paths := shredded(t, log); len(paths) != 0 {
-		t.Fatalf("the run overwrote %v, expected it to unlink the symlink instead", paths)
-	}
 	// And: the link itself is gone, so the argument was still honoured.
 	if _, err := os.Lstat(link); !os.IsNotExist(err) {
 		t.Fatalf("expected the symlink to be removed, err=%v", err)
@@ -566,7 +585,7 @@ func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
 // Why it matters: the overwrite opens the FIFO and waits for a writer that never
 // arrives, so one named pipe anywhere in the tree stops the whole run for ever.
 func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
-	log := testsupport.SetupStubCommands(t)
+	testsupport.SetupStubCommands(t)
 
 	// Given: a tree holding an ordinary file and a FIFO.
 	root := t.TempDir()
@@ -578,20 +597,27 @@ func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
 		t.Fatalf("creating the FIFO: %v", err)
 	}
+	kept := keepContents(t, ordinary)
 
 	// When: the run finishes.
 	res := runBlank(t, root)
 
-	// Then: the overwrite was pointed at the ordinary file and at nothing else.
-	if got := shredded(t, log); !slices.Equal(got, []string{ordinary}) {
-		t.Fatalf("the overwrite ran on %v, expected only %s", got, ordinary)
+	// Then: the run reported no failure. The overwrite refuses a FIFO, so a
+	// clean run is the proof the FIFO was never sent to it.
+	if res.err != nil {
+		t.Fatalf("a tree holding a FIFO reported a failure: %v", res.err)
 	}
 	// And: the FIFO is gone all the same.
 	if _, err := os.Lstat(pipe); !os.IsNotExist(err) {
 		t.Fatalf("expected the FIFO to be removed, err=%v", err)
 	}
-	if res.err != nil {
-		t.Fatalf("a tree holding a FIFO reported a failure: %v", res.err)
+	// And: the ordinary file beside it was overwritten rather than skipped.
+	body, err := os.ReadFile(kept)
+	if err != nil {
+		t.Fatalf("reading the kept contents: %v", err)
+	}
+	if i := bytes.IndexFunc(body, func(r rune) bool { return r != 0 }); i >= 0 {
+		t.Fatalf("byte %d of %s is %#x, so it was never overwritten", i, ordinary, body[i])
 	}
 }
 
@@ -601,7 +627,7 @@ func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
 // Why it matters: enumeration used to remove these as it walked, so moving them
 // into the queue could quietly start following them instead.
 func TestSymlinkInsideATreeLeavesItsTargetIntact(t *testing.T) {
-	log := testsupport.SetupStubCommands(t)
+	testsupport.SetupStubCommands(t)
 
 	// Given: a tree whose only symlink points outside it.
 	outside := t.TempDir()
@@ -625,10 +651,6 @@ func TestSymlinkInsideATreeLeavesItsTargetIntact(t *testing.T) {
 	}
 	if !slices.Equal(got, payload) {
 		t.Fatalf("the target was overwritten: got %q, want %q", got, payload)
-	}
-	// And: the overwrite was never pointed at anything.
-	if paths := shredded(t, log); len(paths) != 0 {
-		t.Fatalf("the run overwrote %v, expected it to unlink the symlink instead", paths)
 	}
 }
 
@@ -688,5 +710,36 @@ func TestRemovalsRunBeforeTheDirectoryHoldingThem(t *testing.T) {
 	}
 	if linkAt > dirAt {
 		t.Fatalf("the directory was reached at %d, before the symlink at %d", dirAt, linkAt)
+	}
+}
+
+// A bad pass count stops the run before anything is destroyed.
+// Given a negative pass count, when the run is asked to start, then it returns
+// an error and every target is still on disk.
+// Why it matters: the count arrives from a command line flag, so it has to be
+// refused once at the entry. Checked per file instead, half the tree would
+// already be gone by the time the first one complained.
+func TestBlankRefusesANegativePassCount(t *testing.T) {
+	// Given: a tree with something to lose.
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", victim, err)
+	}
+
+	// When: the run is asked for a negative number of passes.
+	res := runBlankWith(t, Options{Jobs: DefaultJobs, Passes: -1}, root)
+
+	// Then: it refuses.
+	if res.err == nil {
+		t.Fatal("a negative pass count was accepted")
+	}
+	// And: nothing ran, so the file is untouched.
+	body, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("expected %s to survive a refused run: %v", victim, err)
+	}
+	if string(body) != "payload" {
+		t.Fatalf("a refused run still overwrote the file, contents are now %q", body)
 	}
 }
