@@ -150,17 +150,30 @@ func renderControls(plain string) string {
 
 const markerCells = 6 // "[ ", the state cell, " ", and " ]"
 
+// A wide character costs one rune and two cells, so the fill is counted in
+// cells and never in runes.
+func padCells(s string, width int) string {
+	return s + strings.Repeat(" ", max(width-lipgloss.Width(s), 0))
+}
+
 // The bracket cells and the state cell are drawn on every row and blanked when
 // they have nothing to say, so a label never shifts sideways as the marker moves
 // down the list or a target settles. The caller owns the state cell, which must
 // measure one column.
 func markerRow(width int, state, label string, current bool) string {
+	if width < 1 {
+		return ""
+	}
+	// The marker goes before the state cell does, because the row an operator
+	// must read is the target that survived.
 	inner := width - markerCells
 	if inner < 1 {
-		return strings.Repeat(" ", max(width, 0))
+		if width < 3 {
+			return padCells(state, width)
+		}
+		return padCells(state+" "+clampTail(label, width-2), width)
 	}
-	label = clampTail(label, inner)
-	label += strings.Repeat(" ", max(inner-lipgloss.Width(label), 0))
+	label = padCells(clampTail(label, inner), inner)
 
 	lead, tail := " ", " "
 	body := rowStyle.Render(label)

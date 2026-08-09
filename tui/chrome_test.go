@@ -183,6 +183,30 @@ func TestMarkerRowFitsWideCharacters(t *testing.T) {
 	}
 }
 
+// A row too narrow for the marker still says what the target did.
+// Given every width below the one the bracket pair needs, when a row renders,
+// then it fills that width and still carries its state cell.
+// Why it matters: the panel is four columns narrower than the terminal, so a
+// small window drew every row as spaces. The one row an operator must read is
+// the target that survived, and it carried no mark at all.
+func TestANarrowRowStillCarriesItsStateCell(t *testing.T) {
+	for _, state := range stateCells() {
+		for w := 1; w < markerCells+1; w++ {
+			// When: the row renders at a width the marker cannot fit.
+			got := markerRow(w, state, "/data/secret.txt", true)
+
+			// Then: it fills the column exactly, so the frame cannot tear.
+			if cells := lipgloss.Width(got); cells != w {
+				t.Fatalf("width %d: row measured %d: %q", w, cells, got)
+			}
+			// And: the state cell survives, because it is the mark.
+			if !strings.Contains(got, state) {
+				t.Fatalf("width %d: the row dropped the state cell %q: %q", w, state, got)
+			}
+		}
+	}
+}
+
 // stateCells returns every cell the panel draws in the state column.
 func stateCells() []string {
 	return []string{
