@@ -132,7 +132,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
 		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), 8)
-		m.viewport.Width = m.contentWidth - 2
+		m.viewport.Width = m.contentWidth - 2 - scrollbarCells
 		m.progress.Width = m.contentWidth - reservedForControls(m.contentWidth)
 
 		m.viewport.Height = max(min(activityRows, msg.Height-chromeRows-m.markLines()), 3)
@@ -199,6 +199,17 @@ func (m model) activityView() string {
 	return strings.Join(rows, "\n")
 }
 
+// The viewport renders every row at its full width, blank rows included, so the
+// cell appended to each lands in one column.
+func (m model) panelBody() string {
+	rows := strings.Split(m.viewport.View(), "\n")
+	bar := scrollbar(len(rows), m.viewport.TotalLineCount(), m.viewport.YOffset)
+	for i := range rows {
+		rows[i] += bar[i]
+	}
+	return strings.Join(rows, "\n")
+}
+
 // Every block shares one content column, so they line up on both edges.
 func (m model) View() string {
 	pad := strings.Repeat(" ", padding)
@@ -229,7 +240,7 @@ func (m model) View() string {
 	b.WriteString(pad)
 	b.WriteString(frameTop(m.contentWidth, panelTitle))
 	b.WriteString("\n")
-	b.WriteString(viewportWrapperStyle.Render(panelSides.Render(m.viewport.View())))
+	b.WriteString(viewportWrapperStyle.Render(panelSides.Render(m.panelBody())))
 	return b.String()
 }
 

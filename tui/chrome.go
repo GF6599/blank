@@ -38,6 +38,7 @@ var (
 	rowStyle    = lipgloss.NewStyle().Foreground(colorText)
 	statusStyle = lipgloss.NewStyle().Foreground(colorSubtle)
 	hintStyle   = lipgloss.NewStyle().Foreground(colorMuted)
+	thumbStyle  = lipgloss.NewStyle().Foreground(colorMuted)
 )
 
 // figlet -f ANSI_Shadow "blank", 6 rows by 42 columns.
@@ -157,6 +158,42 @@ func markerRow(width int, label string, current bool) string {
 		body = markedStyle.Render(label)
 	}
 	return markerStyle.Render(lead) + " " + body + " " + markerStyle.Render(tail)
+}
+
+const (
+	// Reserved whether or not the panel scrolls, so no label is re-clamped at
+	// the moment the history outgrows the panel.
+	scrollbarCells = 2
+
+	// A drawn track would sit against the panel border, which is already a light
+	// vertical, and the two render as one thick frame edge.
+	scrollThumb = "█"
+)
+
+// scrollbar returns exactly height cells, one for each visible row. The lit run
+// marks where those rows sit in the history.
+func scrollbar(height, total, offset int) []string {
+	if height <= 0 {
+		return nil
+	}
+	thumb, top := 0, 0
+	if total > height {
+		thumb = max(height*height/total, 1)
+		offset = min(max(offset, 0), total-height)
+		// The travel is the scrollable distance, not the whole history. A divisor
+		// of total stops the thumb short of the last row at the end of a run,
+		// which reads as more history below.
+		top = offset * (height - thumb) / (total - height)
+	}
+	rows := make([]string, height)
+	for i := range rows {
+		cell := " "
+		if i >= top && i < top+thumb {
+			cell = thumbStyle.Render(scrollThumb)
+		}
+		rows[i] = strings.Repeat(" ", scrollbarCells-1) + cell
+	}
+	return rows
 }
 
 const ellipsis = "..."
