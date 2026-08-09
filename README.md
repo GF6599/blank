@@ -9,8 +9,9 @@ an activity log.
 
 ## How it works
 
-`blank` expands each argument into a list of files and directories. It overwrites every
-file concurrently, then removes every directory.
+`blank` expands each argument into a list of targets and sorts them by what destroying one
+means. It overwrites every file concurrently, then unlinks every symlink and special file,
+then removes every directory.
 
 ```mermaid
 graph TD
@@ -21,13 +22,18 @@ graph TD
     D --> F[app: deletion engine]
     E --> F
     F --> G["shred -uzfn 10, once per file"]
+    F --> I["os.Remove, once per symlink or special file"]
     F --> H["rm -rf, once per directory"]
     F -. progress and activity .-> D
     F -. progress and activity .-> E
 ```
 
 Each file gets 10 random overwrite passes plus a final zero pass, which is what
-`shred -uzfn 10` performs. Up to 100 files run at the same time.
+`shred -uzfn 10` performs. `--jobs` sets how many run at the same time.
+
+A symlink and a special file hold no contents of their own, so `blank` unlinks them rather
+than overwriting them. A symlink is never followed, so naming one destroys the link and
+leaves the file it points at alone.
 
 ## What happens when a target survives
 
@@ -143,11 +149,8 @@ These are properties of the current implementation. Each one is reproducible.
 - **A target that fails before the walk queues it gets no row.** A directory the walk
   cannot list is counted in the status line and named in the error, but no row in the
   panel carries a `!` for it, because the run never reached it.
-- **A symlink argument destroys the target.** A symlink passed on the command line goes to
-  `shred`, which follows it. A symlink found inside a walked directory is removed as a
-  link, so only the top level is affected.
-- **A FIFO blocks the run.** `shred` opens the FIFO and waits for a writer that never
-  arrives.
+- **A hardlink is overwritten like any other file.** A hardlink is the file rather than a
+  pointer to it, so destroying one destroys the contents every other link shares.
 - **There is no confirmation prompt and no dry run.** The program starts destroying as
   soon as it parses the arguments, and it refuses no path.
 
