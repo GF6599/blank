@@ -16,7 +16,7 @@ COMMIT  := `git rev-parse --short HEAD 2>/dev/null || echo none`
 DATE    := `date -u +%Y-%m-%dT%H:%M:%SZ`
 
 LDFLAGS := "-s -w"
-RELEASE_OS := "linux darwin windows"
+RELEASE_OS := "linux darwin"
 RELEASE_ARCH := "amd64 arm64"
 
 # Show available recipes

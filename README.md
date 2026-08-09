@@ -52,10 +52,15 @@ not 0, because progress counts targets attempted rather than targets destroyed.
 | Dependency | Why | Note |
 | --- | --- | --- |
 | Go 1.24.2 or later | To build the binary. | |
-| GNU `shred` on `PATH` | The engine runs it once per file. | macOS does not supply it. Run `brew install coreutils`. |
+| GNU `shred` on `PATH` | The engine runs it once per file. | macOS does not supply it. Run `brew install coreutils`, which puts `shred` on `PATH` under its own name. |
 | `rm` on `PATH` | The engine runs it once per directory. | Standard on Linux and macOS. |
 
-Windows has neither program, so a Windows build starts and then fails on every file.
+On macOS you do not need the `gnubin` directory that `brew info coreutils` describes.
+Homebrew adds the `g` prefix only to commands macOS already provides, and macOS has no
+`shred`, so you get both `shred` and `gshred`.
+
+Windows has neither program, so there is no Windows release. A Windows build would start
+and then fail on every file.
 
 ## Install
 
