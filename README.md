@@ -42,6 +42,45 @@ A symlink and a special file hold no contents of their own, so `blank` unlinks t
 than overwriting them. A symlink is never followed, so naming one destroys the link and
 leaves the file it points at alone.
 
+## Before it starts
+
+Expanding the arguments reads the filesystem and changes nothing, so `blank` knows the
+whole list of targets before it destroys the first one. Three checks run on that list.
+
+**It refuses a path that holds everything else.** The root of the filesystem, the
+directories an operating system installs itself into, your home directory, and any
+directory holding one of those. One refused argument stops the whole command line, because
+the arguments beside a mistyped one are not to be trusted either.
+
+```console
+$ blk ~
+Error: /home/dev is a protected path, which blank refuses to destroy
+```
+
+There is no flag to override this. The answer to a refusal is to name a narrower path,
+which is also the answer to the mistake it catches.
+
+**`--dry-run` lists every target and destroys nothing.** It reads the same plan the run
+works from, in the order the run reaches each target.
+
+```console
+$ blk --dry-run ./old-project
+Overwriting /home/dev/old-project/notes.txt
+Removing /home/dev/old-project/link
+Deleting directory /home/dev/old-project
+Dry run. 1 file, 1 symlink or special file, and 1 directory. Nothing was destroyed.
+```
+
+**It asks before it destroys anything.** Only a whole `yes` goes on. Anything else stops
+the run and exits non-zero, and so does a closed input, so a command in a pipeline refuses
+rather than waits. Pass `--yes` from a script.
+
+```console
+$ blk ./old-project
+blank will destroy 1 file, 1 symlink or special file, and 1 directory.
+This cannot be undone. Type yes to continue:
+```
+
 ## What happens when a target survives
 
 `blank` exits non-zero and names every target it did not destroy, on stderr, in both
@@ -49,7 +88,7 @@ modes. A target survives when the walk cannot list a directory, when the overwri
 or when a directory is still not empty by the time the run reaches it.
 
 ```console
-$ blk ./tree
+$ blk --yes ./tree
 Error: 2 targets survived the run
   /home/dev/tree/locked: read directory: open /home/dev/tree/locked: permission denied
   /home/dev/tree: remove directory: remove /home/dev/tree: directory not empty
@@ -72,6 +111,9 @@ exit code cannot disagree.
 
 Read the exit code rather than the progress bar. The bar counts targets attempted rather
 than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
+
+Only a run that destroyed every target exits 0. A refused question, a refused path, and a
+log that could not be opened all exit non-zero having destroyed nothing.
 
 ## Requirements
 
@@ -102,9 +144,12 @@ alias blk="$HOME/self-made-bin/blank"
 blk ./notes.txt ./old-project
 ```
 
+Check the aim with `--dry-run` first. The run then asks before it destroys anything, and
+`--yes` skips the question for a script.
+
 The interface renders inline rather than taking over the screen, so the final frame stays
 in your scrollback after the program exits. The activity panel holds the last 200 lines
-and scrolls. Pass `--log` when you want the full manifest of a larger run.
+and scrolls. Pass `--log <path>` when you want the full manifest of a larger run.
 
 Each row carries one target, and the cell before the name says how far that target has
 got.
@@ -134,17 +179,21 @@ needs reading. The panel shows as many rows in flight as `--jobs` allows.
 
 | Flag | Effect |
 | --- | --- |
+| `--dry-run` | List every target and destroy nothing. |
+| `--yes`, `-y` | Destroy without asking first. |
 | `--jobs` | Targets to overwrite at the same time. Default 16. Below 1 is refused. |
 | `--passes` | Random covers over each file before the zero cover. Default 10. Below 0 is refused. |
-| `--log` | Write logs to `blank.log` in the working directory. Off by default. |
+| `--log <path>` | Write the run log to this path. Off by default. |
 | `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
 
 The work is disk bound, so the best `--jobs` value belongs to the device and not to the
 processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms, 8 took
 143ms, 100 took 177ms, and 4 took 216ms. Measure your own disk before you change it.
 
-`blank.log` records the full path of every file the run touched, so treat it as a manifest
-of what you destroyed. It is created mode `0600`, readable only by you.
+The log holds one line per target and names the full path of each, so it is a manifest of
+what you destroyed and where it lived. Choose a path you are willing to leave that at. It
+is created mode `0600`, readable only by you, and a path that cannot be opened stops the
+run before it destroys anything.
 
 ## Known limitations
 
@@ -162,8 +211,11 @@ These are properties of the current implementation. Each one is reproducible.
   data somewhere else and leave the old blocks intact. A snapshot, a journal, or a backup
   keeps its own copy either way. This limit is the storage layer's, not the tool's, and no
   number of passes removes it. Full disk encryption is the answer that does.
-- **There is no confirmation prompt and no dry run.** The program starts destroying as
-  soon as it parses the arguments, and it refuses no path.
+- **The protected path guard compares names, not devices.** It reads the path you typed
+  against a list and against your home directory. It does not resolve mount points, so a
+  directory inside your home that is a bind mount of a system path is walked like any
+  other directory. The guard catches a mistyped argument, which is what it is for. It is
+  not a barrier against someone determined to destroy their own machine.
 
 ## Development
 
@@ -192,7 +244,10 @@ just e2e      # generate a dummy tree and delete it headlessly
 .
 ├── main.go                 # Entry point. Calls cmd.Execute.
 ├── cmd/root.go             # Cobra root command: flags, logging, mode choice.
-├── app/blank.go            # Walks the arguments and runs the deletion.
+├── cmd/plan.go             # Prints the plan, and asks before the run starts.
+├── app/blank.go            # Runs the deletion and reports what survived it.
+├── app/plan.go             # Expands the arguments into what a run would destroy.
+├── app/guard.go            # The paths a run refuses to destroy.
 ├── app/overwrite.go        # Destroys one file: the covers, the rename, the unlink.
 ├── tui/tui.go              # Bubble Tea model: state, sizing, layout.
 ├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
