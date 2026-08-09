@@ -26,6 +26,8 @@ var (
 	colorText   = lipgloss.Color(rosePineText)
 	colorMuted  = lipgloss.Color(rosePineMuted)
 	colorSubtle = lipgloss.Color(rosePineSubtle)
+	colorFailed = lipgloss.Color(rosePineLove)
+	colorBusy   = lipgloss.Color(rosePineFoam)
 )
 
 // The single corner lever. Every border and every hand-built rule reads it.
@@ -39,7 +41,13 @@ var (
 	statusStyle = lipgloss.NewStyle().Foreground(colorSubtle)
 	hintStyle   = lipgloss.NewStyle().Foreground(colorMuted)
 	thumbStyle  = lipgloss.NewStyle().Foreground(colorMuted)
+	failedStyle = lipgloss.NewStyle().Foreground(colorFailed)
+	busyStyle   = lipgloss.NewStyle().Foreground(colorBusy)
 )
+
+// An ASCII mark, because a target that survived is the one row an operator must
+// be able to read on any terminal and in any font.
+const failedMark = "!"
 
 // figlet -f ANSI_Shadow "blank", 6 rows by 42 columns.
 var markArt = []string{
@@ -139,11 +147,13 @@ func renderControls(plain string) string {
 	return b.String()
 }
 
-const markerCells = 4 // "[ " and " ]"
+const markerCells = 6 // "[ ", the state cell, " ", and " ]"
 
-// The bracket cells are drawn on every row and blanked when the row is not
-// current, so a label never shifts sideways as the marker moves down the list.
-func markerRow(width int, label string, current bool) string {
+// The bracket cells and the state cell are drawn on every row and blanked when
+// they have nothing to say, so a label never shifts sideways as the marker moves
+// down the list or a target settles. The caller owns the state cell, which must
+// measure one column.
+func markerRow(width int, state, label string, current bool) string {
 	inner := width - markerCells
 	if inner < 1 {
 		return strings.Repeat(" ", max(width, 0))
@@ -157,7 +167,7 @@ func markerRow(width int, label string, current bool) string {
 		lead, tail = "[", "]"
 		body = markedStyle.Render(label)
 	}
-	return markerStyle.Render(lead) + " " + body + " " + markerStyle.Render(tail)
+	return markerStyle.Render(lead) + " " + state + " " + body + " " + markerStyle.Render(tail)
 }
 
 const (

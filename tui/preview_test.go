@@ -7,23 +7,29 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"blank/app"
 )
 
-func previewModel(t *testing.T, w, h int, pct float64, logs []string, done bool) model {
+func previewModel(t *testing.T, w, h int, pct float64, rows []activityRow, done bool) model {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	vp := viewport.New(0, 0)
 	bar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	sp.Style = busyStyle
 	bar.EmptyColor = rosePineHighlightMed
 	m := model{
 		progress: bar,
+		spinner:  sp,
 		viewport: vp,
 		ctx:      ctx,
 		cancel:   cancel,
-		logs:     logs,
+		rows:     rows,
 	}
 	m.completed = done
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
@@ -34,21 +40,33 @@ func previewModel(t *testing.T, w, h int, pct float64, logs []string, done bool)
 	return m
 }
 
+// demoRows builds one row per stage in turn, so a layout test that sweeps
+// widths also sweeps everything the state column can hold.
+func demoRows(texts ...string) []activityRow {
+	stages := []app.Stage{app.StageStart, app.StageDone, app.StageFailed}
+	rows := make([]activityRow, len(texts))
+	for i, text := range texts {
+		rows[i] = activityRow{path: text, text: text, stage: stages[i%len(stages)]}
+	}
+	return rows
+}
+
 func TestPreviewRender(t *testing.T) {
-	logs := []string{
+	logs := demoRows(
 		"Overwriting /Users/dev/Documents/secret-report.pdf",
 		"Overwriting /Users/dev/Documents/keys/id_rsa",
 		"Deleting directory /Users/dev/Documents/keys",
+	)
+	deepText := make([]string, 40)
+	for i := range deepText {
+		deepText[i] = fmt.Sprintf("Overwriting /Users/dev/Documents/archive/report-%03d.pdf", i)
 	}
-	deep := make([]string, 40)
-	for i := range deep {
-		deep[i] = fmt.Sprintf("Overwriting /Users/dev/Documents/archive/report-%03d.pdf", i)
-	}
+	deep := demoRows(deepText...)
 	for _, tc := range []struct {
 		name string
 		w, h int
 		pct  float64
-		logs []string
+		logs []activityRow
 		done bool
 	}{
 		{"narrow-40x20", 40, 20, 0.33, logs, false},

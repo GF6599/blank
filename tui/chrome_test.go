@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -128,8 +129,8 @@ func TestMarkCarriesNoBraces(t *testing.T) {
 func TestMarkerReservesItsCellsOnEveryRow(t *testing.T) {
 	// Given: one current row and one that is not, at the same width.
 	const w = 40
-	current := markerRow(w, "overwriting a.txt", true)
-	other := markerRow(w, "overwriting a.txt", false)
+	current := markerRow(w, " ", "overwriting a.txt", true)
+	other := markerRow(w, " ", "overwriting a.txt", false)
 
 	// Then: both measure the same, so nothing shifts as the marker moves.
 	if lipgloss.Width(current) != lipgloss.Width(other) {
@@ -143,7 +144,7 @@ func TestMarkerReservesItsCellsOnEveryRow(t *testing.T) {
 		t.Fatalf("non-current row drew a marker: %q", other)
 	}
 	// And: a long label is clamped rather than overflowing the row.
-	long := markerRow(w, strings.Repeat("x", 200), true)
+	long := markerRow(w, " ", strings.Repeat("x", 200), true)
 	if lipgloss.Width(long) != w {
 		t.Fatalf("long label overran the row: measured %d", lipgloss.Width(long))
 	}
@@ -166,16 +167,41 @@ func TestMarkerRowFitsWideCharacters(t *testing.T) {
 		{"ascii", "Overwriting /tmp/plain/a-fairly-long-ascii-file-name.txt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// When: the row renders at every width the panel can offer.
-			for w := 8; w <= 120; w++ {
-				got := markerRow(w, tc.label, true)
+			// When: the row renders at every width the panel can offer, in each
+			// stage, so the braille frame is swept as well as the ASCII cells.
+			for _, state := range stateCells() {
+				for w := 8; w <= 120; w++ {
+					got := markerRow(w, state, tc.label, true)
 
-				// Then: it occupies exactly that width, so the frame cannot tear.
-				if lipgloss.Width(got) != w {
-					t.Fatalf("width %d: row measured %d: %q", w, lipgloss.Width(got), got)
+					// Then: it occupies exactly that width, so the frame cannot tear.
+					if lipgloss.Width(got) != w {
+						t.Fatalf("width %d: row measured %d: %q", w, lipgloss.Width(got), got)
+					}
 				}
 			}
 		})
+	}
+}
+
+// stateCells returns every cell the panel draws in the state column.
+func stateCells() []string {
+	return []string{
+		" ",
+		failedStyle.Render(failedMark),
+		spinner.New(spinner.WithSpinner(spinner.MiniDot)).View(),
+	}
+}
+
+// The state cell is exactly one column, whatever it shows.
+// Given each cell the panel can draw there, when it is measured, then it is one
+// column wide.
+// Why it matters: the row budgets a single column for it, so a two cell glyph
+// pushes every label one past the frame and tears the panel on every line.
+func TestStateCellIsOneColumn(t *testing.T) {
+	for _, cell := range stateCells() {
+		if got := lipgloss.Width(cell); got != 1 {
+			t.Errorf("state cell %q measured %d columns", cell, got)
+		}
 	}
 }
 
@@ -214,7 +240,7 @@ func TestClampsBudgetInDisplayCells(t *testing.T) {
 // Why it matters: a row that under-budgets its own width only overruns at the
 // sizes where the content nearly fits, so three fixed widths walk past it.
 func TestLayoutSharesOneContentColumn(t *testing.T) {
-	logs := []string{"Overwriting /a/b/c.txt", "Deleting directory /a/b"}
+	logs := demoRows("Overwriting /a/b/c.txt", "Deleting directory /a/b")
 	// Given: a sweep across terminal sizes rather than a few samples. Height is
 	// swept too, because the mark degrades on a short terminal and the viewport
 	// has to give back the rows it stops using.
@@ -269,7 +295,7 @@ func TestLayoutSharesOneContentColumn(t *testing.T) {
 // renderer drops lines off the top when the view is taller than the terminal, so
 // a view that grows to fill the screen loses its mark on every frame.
 func TestViewStaysCompactWhateverTheTerminalHeight(t *testing.T) {
-	logs := []string{"Overwriting /a/b/c.txt"}
+	logs := demoRows("Overwriting /a/b/c.txt")
 	const w = 80
 
 	// Given: two heights, both above the gate where the mark degrades, so the

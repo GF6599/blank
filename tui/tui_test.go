@@ -5,8 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"blank/app"
 )
 
 // The activity panel keeps a bounded history.
@@ -22,13 +25,13 @@ func TestActivityHistoryStaysBounded(t *testing.T) {
 	// When: many more messages arrive than the panel retains.
 	const sent = activityHistory * 3
 	for i := range sent {
-		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%06d.bin", i)})
+		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%06d.bin", i), Stage: app.StageStart})
 	}
 	got := cur.(model)
 
 	// Then: the history is capped rather than growing with the run.
-	if len(got.logs) > activityHistory {
-		t.Fatalf("history grew to %d rows, the cap is %d", len(got.logs), activityHistory)
+	if len(got.rows) > activityHistory {
+		t.Fatalf("history grew to %d rows, the cap is %d", len(got.rows), activityHistory)
 	}
 	// And: the newest line is the one on screen, so the cap trims the old end.
 	newest := fmt.Sprintf("file-%06d.bin", sent-1)
@@ -109,7 +112,7 @@ func TestActivityPanelDrawsTheScrollBarInsideTheFrame(t *testing.T) {
 	// Given: a panel holding far more history than it shows.
 	var cur tea.Model = previewModel(t, 80, 24, 0.5, nil, false)
 	for i := range 40 {
-		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%03d.bin", i)})
+		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%03d.bin", i), Stage: app.StageStart})
 	}
 
 	// When: the newest line has just arrived, so the view sits at the bottom.
@@ -132,6 +135,122 @@ func TestActivityPanelDrawsTheScrollBarInsideTheFrame(t *testing.T) {
 	}
 	if string(atTop[len(atTop)-1]) == scrollThumb {
 		t.Fatalf("thumb still covers the bottom of the track after scrolling up\n%s", cur.(model).View())
+	}
+}
+
+// A settle marks the target it names and leaves the others alone.
+// Given three targets running, when the middle one reports done and the last
+// reports failed, then the first is still running and each of the other two
+// carries its own outcome.
+// Why it matters: the panel is the only place a failure shows while the run is
+// in progress, so a settle applied to the wrong row names the wrong file as
+// destroyed and clears the one that actually survived.
+func TestActivityRowsSettleIndependently(t *testing.T) {
+	// Given: three targets the run has reached but not finished.
+	paths := []string{"/data/a.bin", "/data/b.bin", "/data/c.bin"}
+	var cur tea.Model = previewModel(t, 80, 24, 0, nil, false)
+	for _, p := range paths {
+		cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: p, Stage: app.StageStart})
+	}
+
+	// When: the middle one succeeds and the last one fails.
+	cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: paths[1], Stage: app.StageDone})
+	cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: paths[2], Stage: app.StageFailed})
+
+	// Then: every row holds the stage its own target reported.
+	got := cur.(model)
+	want := []app.Stage{app.StageStart, app.StageDone, app.StageFailed}
+	if len(got.rows) != len(want) {
+		t.Fatalf("expected %d rows, got %d", len(want), len(got.rows))
+	}
+	for i, w := range want {
+		if got.rows[i].stage != w {
+			t.Fatalf("row %d (%s) is %v, expected %v", i, got.rows[i].path, got.rows[i].stage, w)
+		}
+	}
+}
+
+// A settle for a target the panel no longer holds changes nothing.
+// Given a history that has outgrown its cap, when the oldest target settles,
+// then no row changes and the panel keeps its newest rows.
+// Why it matters: a long run trims a slow file's row away before it finishes,
+// and a search that falls through to the nearest row would settle an unrelated
+// file as destroyed.
+func TestSettleForATrimmedRowIsIgnored(t *testing.T) {
+	// Given: a run that has pushed the first target off the end of the history.
+	var cur tea.Model = previewModel(t, 80, 24, 0, nil, false)
+	first := "/data/file-000000.bin"
+	for i := range activityHistory + 5 {
+		cur, _ = cur.Update(activityMsg{
+			Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%06d.bin", i), Stage: app.StageStart,
+		})
+	}
+
+	// When: that first target finally reports.
+	cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: first, Stage: app.StageDone})
+
+	// Then: nothing settled, because the row it named is gone.
+	got := cur.(model)
+	for _, r := range got.rows {
+		if r.stage != app.StageStart {
+			t.Fatalf("row %s settled to %v on a stale event", r.path, r.stage)
+		}
+	}
+}
+
+// The spinner stops once no target is running.
+// Given a panel whose targets have all settled, when a tick arrives, then it
+// schedules no further tick.
+// Why it matters: the tick repaints the whole panel ten times a second, so a
+// loop that outlives the run keeps a finished program busy for as long as it
+// stays open.
+func TestSpinnerStopsWhenNothingIsRunning(t *testing.T) {
+	// Given: one target that has started, so the animation is live.
+	var cur tea.Model = previewModel(t, 80, 24, 0, nil, false)
+	cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: "/data/a.bin", Stage: app.StageStart})
+	cur, tick := cur.Update(spinner.TickMsg{})
+	if tick == nil {
+		t.Fatal("the animation stopped while a target was still running")
+	}
+
+	// When: that target settles and the next tick arrives.
+	cur, _ = cur.Update(activityMsg{Verb: "Overwriting", Path: "/data/a.bin", Stage: app.StageDone})
+	_, tick = cur.Update(spinner.TickMsg{})
+
+	// Then: nothing schedules another frame.
+	if tick != nil {
+		t.Fatal("the animation kept running after every target settled")
+	}
+}
+
+// Each stage renders as its own cell, in a column of its own.
+// Given one row per stage, when they render, then a running row shows the
+// animation, a failed row shows the mark, and a done row shows neither.
+// Why it matters: a stopped animation is what says the file is gone, so a
+// failed row that renders like a finished one reports destruction of a file
+// still sitting on disk.
+func TestEachStageRendersItsOwnCell(t *testing.T) {
+	// Given: a panel holding one target in each stage.
+	rows := []activityRow{
+		{path: "/a", text: "Overwriting /a", stage: app.StageStart},
+		{path: "/b", text: "Overwriting /b", stage: app.StageDone},
+		{path: "/c", text: "Overwriting /c", stage: app.StageFailed},
+	}
+	m := previewModel(t, 80, 24, 0.5, rows, false)
+
+	// When / Then: the failed row is the only one carrying the mark.
+	view := m.View()
+	if strings.Count(view, failedMark) != 1 {
+		t.Fatalf("expected exactly one failure mark, view was:\n%s", view)
+	}
+	// And: the running row carries a frame of the animation, which the settled
+	// rows do not.
+	frame := strings.TrimSpace(m.spinner.View())
+	if frame == "" {
+		t.Fatal("the animation rendered nothing")
+	}
+	if strings.Count(view, frame) != 1 {
+		t.Fatalf("expected the animation on the running row alone, view was:\n%s", view)
 	}
 }
 

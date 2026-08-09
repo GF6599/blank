@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,9 +47,18 @@ type (
 	activityMsg   app.Event
 )
 
+// activityRow is one target's line in the panel. path is what a settle event
+// names it by, and text is what the row reads as.
+type activityRow struct {
+	path  string
+	text  string
+	stage app.Stage
+}
+
 type model struct {
 	progress     progress.Model
 	viewport     viewport.Model
+	spinner      spinner.Model
 	ctx          context.Context
 	cancel       context.CancelFunc
 	args         []string
@@ -56,7 +66,8 @@ type model struct {
 	activityCh   chan app.Event
 	done         chan error
 	completed    bool
-	logs         []string
+	ticking      bool
+	rows         []activityRow
 	contentWidth int
 	termHeight   int
 }
@@ -72,16 +83,19 @@ func UIStart(args []string) error {
 	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
 	progressBar.EmptyColor = rosePineHighlightMed
 	progressBar.PercentageStyle = lipgloss.NewStyle().Foreground(colorSubtle)
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	sp.Style = busyStyle
 	m := model{
 		progress:   progressBar,
 		viewport:   vp,
+		spinner:    sp,
 		ctx:        ctx,
 		cancel:     cancel,
 		args:       args,
 		progressCh: make(chan float64),
 		activityCh: make(chan app.Event),
 		done:       make(chan error, 1),
-		logs:       make([]string, 0, 16),
+		rows:       make([]activityRow, 0, 16),
 	}
 	defer cancel()
 
@@ -167,18 +181,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenForProgressUpdate(m.ctx, m.progressCh)
 
 	case activityMsg:
-		// The panel appends one row per target, so it follows the start of the
-		// work and the settle events update a row it already holds.
-		if msg.Stage != app.StageStart {
-			return m, listenForActivityUpdate(m.ctx, m.activityCh)
-		}
-		m.logs = append(m.logs, msg.Verb+" "+msg.Path)
-		if len(m.logs) > activityHistory {
-			m.logs = slices.Delete(m.logs, 0, len(m.logs)-activityHistory)
-		}
+		m.note(app.Event(msg))
 		m.viewport.SetContent(m.activityView())
 		m.viewport.GotoBottom()
-		return m, listenForActivityUpdate(m.ctx, m.activityCh)
+		cmds := []tea.Cmd{listenForActivityUpdate(m.ctx, m.activityCh)}
+		// The animation is driven by one tick that re-arms itself, so it is
+		// started only when nothing is already driving it.
+		if !m.ticking && m.running() {
+			m.ticking = true
+			cmds = append(cmds, m.spinner.Tick)
+		}
+		return m, tea.Batch(cmds...)
+
+	case spinner.TickMsg:
+		if m.completed || !m.running() {
+			m.ticking = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		m.viewport.SetContent(m.activityView())
+		return m, cmd
 
 	default:
 		return m, nil
@@ -194,12 +217,49 @@ func (m model) markLines() int {
 	return 1
 }
 
+// note appends a target the run has reached, or settles one it already holds.
+// A settle is searched for from the newest row, because a target settles close
+// behind its own start. One the history cap has already dropped is left alone,
+// so a stale event cannot settle an unrelated file.
+func (m *model) note(e app.Event) {
+	if e.Stage == app.StageStart {
+		m.rows = append(m.rows, activityRow{path: e.Path, text: e.Verb + " " + e.Path, stage: e.Stage})
+		if len(m.rows) > activityHistory {
+			m.rows = slices.Delete(m.rows, 0, len(m.rows)-activityHistory)
+		}
+		return
+	}
+	for i := len(m.rows) - 1; i >= 0; i-- {
+		if m.rows[i].path == e.Path {
+			m.rows[i].stage = e.Stage
+			return
+		}
+	}
+}
+
+func (m model) running() bool {
+	return slices.ContainsFunc(m.rows, func(r activityRow) bool { return r.stage == app.StageStart })
+}
+
+// A settled row shows nothing, so what is left on screen is what still needs
+// reading: the work in flight, and every target that survived it.
+func (m model) stateCell(stage app.Stage) string {
+	switch stage {
+	case app.StageFailed:
+		return failedStyle.Render(failedMark)
+	case app.StageDone:
+		return " "
+	default:
+		return m.spinner.View()
+	}
+}
+
 // Only the newest line is current, so the bracket pair tracks the work as it
 // moves down the list.
 func (m model) activityView() string {
-	rows := make([]string, len(m.logs))
-	for i, line := range m.logs {
-		rows[i] = markerRow(m.viewport.Width, line, i == len(m.logs)-1 && !m.completed)
+	rows := make([]string, len(m.rows))
+	for i, r := range m.rows {
+		rows[i] = markerRow(m.viewport.Width, m.stateCell(r.stage), r.text, i == len(m.rows)-1 && !m.completed)
 	}
 	return strings.Join(rows, "\n")
 }
