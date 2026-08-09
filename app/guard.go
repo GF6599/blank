@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,12 +19,22 @@ var systemPaths = []string{
 	"/Applications", "/Library", "/System", "/Users", "/Volumes", "/private",
 }
 
-// protectedPaths reads the home directory on each call rather than once at
-// startup, so the answer belongs to the caller running the command.
+// A test drives the guard through this rather than naming the real home.
+var currentUser = user.Current
+
+// protectedPaths reads the home directory from the environment and from the
+// user database, and protects whichever of the two it gets. HOME belongs to
+// whoever started the process: missing, it drops the protection, and wrong, it
+// aims the protection at a directory nobody lives in. The user database is the
+// answer the environment cannot move. The environment still counts as well,
+// because a caller who sets HOME on purpose means the directory they named.
 func protectedPaths() []string {
 	paths := slices.Clone(systemPaths)
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths, filepath.Clean(home))
+	}
+	if u, err := currentUser(); err == nil && u.HomeDir != "" {
+		paths = append(paths, filepath.Clean(u.HomeDir))
 	}
 	return paths
 }

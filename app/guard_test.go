@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -64,6 +65,40 @@ func TestARefusedArgumentStopsEveryArgumentBesideIt(t *testing.T) {
 	// And: the ordinary tree is not in the plan.
 	if plan.Total() != 0 {
 		t.Fatalf("a refused command line still planned %d targets: %v", plan.Total(), plan.Targets())
+	}
+}
+
+// The home directory stays protected whatever the environment says.
+// Given an environment that has lost HOME or points it somewhere else, when the
+// real home directory is named, then the run still refuses it.
+// Why it matters: HOME belongs to whoever started the process, and a run from
+// cron or a systemd unit has a minimal environment. Reading only that variable
+// drops the protection when it is missing and aims it at the wrong directory
+// when it is wrong, and neither failure says anything on the way past.
+func TestTheHomeGuardDoesNotDependOnTheEnvironment(t *testing.T) {
+	// Given: a home directory that only the user database knows about.
+	home := t.TempDir()
+	currentUser = func() (*user.User, error) { return &user.User{HomeDir: home}, nil }
+	t.Cleanup(func() { currentUser = user.Current })
+
+	for name, env := range map[string]string{
+		"the variable is missing":       "",
+		"the variable points elsewhere": t.TempDir(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("HOME", env)
+
+			// When: the real home directory is named.
+			plan, err := Enumerate([]string{home})
+
+			// Then: the run refuses it and plans nothing.
+			if err == nil {
+				t.Fatalf("%s was accepted as a target", home)
+			}
+			if plan.Total() != 0 {
+				t.Fatalf("a refused run planned %d targets", plan.Total())
+			}
+		})
 	}
 }
 
