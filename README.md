@@ -100,7 +100,7 @@ and scrolls. Pass `--log` when you want the full manifest of a larger run.
 | `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
 
 `blank.log` records the full path of every file the run touched, so treat it as a manifest
-of what you destroyed.
+of what you destroyed. It is created mode `0600`, readable only by you.
 
 ## Known limitations
 

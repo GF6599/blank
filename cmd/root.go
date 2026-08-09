@@ -85,7 +85,9 @@ func runHeadless(args []string) error {
 
 func setupLogging(enable bool, suppress bool) func() {
 	if enable {
-		lf, err := os.OpenFile("blank.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		// The log names every path the run touched, so it is a manifest of what
+		// was destroyed and where it lived. Nobody else needs to read it.
+		lf, err := os.OpenFile("blank.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			if suppress {
 				slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
