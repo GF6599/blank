@@ -32,14 +32,19 @@ var (
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			opts := app.Options{Jobs: jobs, Passes: passes}
+			if err := opts.Validate(); err != nil {
+				return err
+			}
 			// The log closes when this returns, so both modes below wait for the
 			// engine before they do.
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
+			plan := app.Enumerate(args)
 			if noUI {
-				return runHeadless(args, app.Options{Jobs: jobs, Passes: passes})
+				return runHeadless(plan, opts)
 			}
-			return tui.UIStart(args, app.Options{Jobs: jobs, Passes: passes})
+			return tui.UIStart(plan, opts)
 		},
 	}
 )
@@ -61,7 +66,7 @@ func Execute() {
 	}
 }
 
-func runHeadless(args []string, opts app.Options) error {
+func runHeadless(plan app.Plan, opts app.Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -89,7 +94,7 @@ func runHeadless(args []string, opts app.Options) error {
 		}
 	}()
 
-	err := app.Blank(ctx, args, opts, progressCh, activityCh)
+	err := app.Blank(ctx, plan, opts, progressCh, activityCh)
 	wg.Wait()
 	return err
 }

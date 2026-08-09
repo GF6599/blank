@@ -94,7 +94,7 @@ func runBlankWith(t *testing.T, opts Options, args ...string) result {
 		}
 	}()
 
-	res.err = Blank(context.Background(), args, opts, progressCh, activityCh)
+	res.err = Blank(context.Background(), Enumerate(args), opts, progressCh, activityCh)
 	wg.Wait()
 	return res
 }

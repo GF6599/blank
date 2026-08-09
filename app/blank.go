@@ -8,20 +8,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
-)
-
-type (
-	file      string
-	directory string
-
-	// removal is a symlink or a special file: a directory entry that holds no
-	// contents of its own, so the run unlinks it rather than overwriting it.
-	removal string
 )
 
 // DefaultJobs is how many targets are overwritten at the same time. The work is
@@ -158,47 +148,6 @@ func (f *failures) err() error {
 	return &IncompleteRun{Failures: slices.Clone(f.list)}
 }
 
-// work holds one bucket per way of destroying a target.
-type work struct {
-	files       []file
-	removals    []removal
-	directories []directory
-}
-
-func (w *work) len() int {
-	return len(w.files) + len(w.removals) + len(w.directories)
-}
-
-type kind int
-
-const (
-	kindFile kind = iota
-	kindDir
-	kindSymlink
-	// kindSpecial is a FIFO, a socket, or a device node. The overwrite opens
-	// its target, and opening one of these blocks until a peer arrives.
-	kindSpecial
-)
-
-// classify reads the path once. The walk needs both answers for every entry,
-// and a single Lstat carries them.
-func classify(path string) (kind, error) {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return kindFile, err
-	}
-	switch {
-	case fi.Mode()&os.ModeSymlink != 0:
-		return kindSymlink, nil
-	case fi.IsDir():
-		return kindDir, nil
-	case fi.Mode().IsRegular():
-		return kindFile, nil
-	default:
-		return kindSpecial, nil
-	}
-}
-
 // Options are the knobs a run is given. A struct rather than positional
 // arguments, because two bare ints side by side in the signature can be swapped
 // by a caller with nothing to catch it.
@@ -209,64 +158,44 @@ type Options struct {
 	Passes int
 }
 
-// Blank expands CLI arguments, walks directories, and securely deletes each
-// item while streaming progress percentages and human-readable activity
-// updates. It returns an error naming every target that survived.
-func Blank(ctx context.Context, args []string, opts Options, progress chan<- float64, activity chan<- Event) error {
+// Blank destroys everything the plan holds, streaming progress and activity as
+// it goes. It returns an error naming every target that survived, including the
+// ones the enumeration behind the plan already could not read.
+func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64, activity chan<- Event) error {
 	// Refused rather than clamped, and refused here rather than per target, so a
 	// bad value stops the run before it destroys anything.
-	if err := opts.validate(); err != nil {
-		close(progress)
-		if activity != nil {
-			close(activity)
-		}
+	if err := opts.Validate(); err != nil {
+		closeStreams(progress, activity)
 		return err
 	}
-	// Local workload to avoid global mutable state accumulation / data races
-	w := &work{}
-	fails := &failures{}
-	for _, arg := range args {
-		// Convert to absolute path
-		absolutePath, err := filepath.Abs(arg)
-		if err != nil {
-			fails.add(arg, fmt.Errorf("resolve path: %w", err))
-			continue
-		}
-		k, err := classify(absolutePath)
-		if err != nil {
-			fails.add(absolutePath, fmt.Errorf("read path: %w", err))
-			continue
-		}
-		switch k {
-		case kindDir:
-			walk(w, fails, absolutePath)
-		case kindSymlink, kindSpecial:
-			w.removals = append(w.removals, removal(absolutePath))
-		default:
-			w.files = append(w.files, file(absolutePath))
-		}
-	}
-	if w.len() == 0 {
-		slog.Info("No files or directories to shred")
-		close(progress)
-		if activity != nil {
-			close(activity)
-		}
+	fails := &failures{list: slices.Clone(plan.Failures)}
+	if plan.Total() == 0 {
+		slog.Info("Nothing to destroy")
+		closeStreams(progress, activity)
 		return fails.err()
 	}
-	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
-	concurrentShred(ctx, w, opts, fails, progress, activity)
+	slog.Info("Targets to destroy", "TOTAL", plan.Total())
+	concurrentShred(ctx, plan, opts, fails, progress, activity)
 	if err := fails.err(); err != nil {
 		return err
 	}
-	slog.Info("blank finished. All files and directories deleted.")
+	slog.Info("blank finished. Every target was destroyed.")
 	return nil
+}
+
+// closeStreams ends both streams. A reader ranges over them, so a run that
+// returns without closing them leaves that reader waiting for ever.
+func closeStreams(progress chan<- float64, activity chan<- Event) {
+	close(progress)
+	if activity != nil {
+		close(activity)
+	}
 }
 
 // os.Remove never follows a symlink to the file it names, and it never opens
 // the entry, so a FIFO with no writer cannot stall the run.
-func removeEntry(r removal) error {
-	if err := os.Remove(string(r)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+func removeEntry(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove: %w", err)
 	}
 	return nil
@@ -277,9 +206,9 @@ func removeEntry(r removal) error {
 // failed to destroy into a reported failure. `rm -rf` removed the directory
 // either way, so a file whose contents were never overwritten was unlinked all
 // the same: the caller lost the file and the plaintext stayed on the disk.
-func removeDir(d directory) error {
-	slog.Info("Deleting directory", "DIR", string(d))
-	if err := os.Remove(string(d)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+func removeDir(path string) error {
+	slog.Info("Deleting directory", "DIR", path)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove directory: %w", err)
 	}
 	return nil
@@ -287,17 +216,14 @@ func removeDir(d directory) error {
 
 // concurrentShred fans work out to a fixed pool of workers, and emits live
 // progress plus optional activity updates.
-func concurrentShred(ctx context.Context, w *work, opts Options, fails *failures, progress chan<- float64, activity chan<- Event) {
+func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failures, progress chan<- float64, activity chan<- Event) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	defer close(progress)
-	if activity != nil {
-		defer close(activity)
-	}
+	defer closeStreams(progress, activity)
 	var wg sync.WaitGroup
 
-	total := w.len()
+	total := plan.Total()
 	var done atomic.Int64
 
 	sendEvent := func(verb, path string, stage Stage) {
@@ -346,8 +272,8 @@ func concurrentShred(ctx context.Context, w *work, opts Options, fails *failures
 	// Workers pull from the queue rather than one goroutine starting per file.
 	// A semaphore bounds the work in flight but not the goroutines, so a large
 	// tree used to allocate a stack for every file before any overwrite began.
-	queue := make(chan file)
-	for range min(opts.Jobs, len(w.files)) {
+	queue := make(chan string)
+	for range min(opts.Jobs, len(plan.Files)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -355,8 +281,8 @@ func concurrentShred(ctx context.Context, w *work, opts Options, fails *failures
 				if ctx.Err() != nil {
 					return
 				}
-				runTarget(verbFile, string(f), func() error {
-					return overwriteFile(ctx, string(f), opts.Passes)
+				runTarget(verbFile, f, func() error {
+					return overwriteFile(ctx, f, opts.Passes)
 				})
 				update()
 			}
@@ -364,7 +290,7 @@ func concurrentShred(ctx context.Context, w *work, opts Options, fails *failures
 	}
 
 feed:
-	for _, f := range w.files {
+	for _, f := range plan.Files {
 		select {
 		case <-ctx.Done():
 			break feed
@@ -376,55 +302,29 @@ feed:
 
 	// Removals run before the directories that hold them, because a directory
 	// is only removable once it is empty.
-	for _, r := range w.removals {
+	for _, r := range plan.Removals {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		runTarget(verbRemoval, string(r), func() error { return removeEntry(r) })
+		runTarget(verbRemoval, r, func() error { return removeEntry(r) })
 		update()
 	}
 
 	// Deepest first. walk appends a directory before the entries inside it, so
 	// reading its output backwards always reaches a child before its parent,
 	// which is the order os.Remove needs.
-	for _, dir := range slices.Backward(w.directories) {
+	for _, dir := range slices.Backward(plan.Directories) {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		runTarget(verbDir, string(dir), func() error { return removeDir(dir) })
+		runTarget(verbDir, dir, func() error { return removeDir(dir) })
 		update()
 	}
 }
 
-// walk collects the tree under dir. A directory it cannot read is recorded
-// rather than skipped, because os.ReadDir failing looks exactly like an empty
-// directory and the files inside would otherwise never be queued.
-func walk(w *work, fails *failures, dir string) {
-	w.directories = append(w.directories, directory(dir))
-	entries, err := readDir(dir)
-	if err != nil {
-		fails.add(dir, fmt.Errorf("read directory: %w", err))
-		return
-	}
-	for _, e := range entries {
-		fp := filepath.Join(dir, e.Name())
-		k, err := classify(fp)
-		if err != nil {
-			fails.add(fp, fmt.Errorf("read path: %w", err))
-			continue
-		}
-		switch k {
-		case kindSymlink, kindSpecial:
-			w.removals = append(w.removals, removal(fp))
-		case kindDir:
-			walk(w, fails, fp)
-		default:
-			w.files = append(w.files, file(fp))
-		}
-	}
-}
-
-func (o Options) validate() error {
+// Validate reports a setting a run refuses. The command calls it before it
+// enumerates, so a bad flag stops the run before it reads or destroys anything.
+func (o Options) Validate() error {
 	if o.Jobs < 1 {
 		// A pool of no workers queues every file against nothing, and the run
 		// hangs reporting them all as in progress.
