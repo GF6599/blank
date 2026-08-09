@@ -34,9 +34,9 @@ func (w *work) len() int {
 	return len(w.files) + len(w.directories)
 }
 
-// Gshred expands CLI arguments, walks directories, and securely deletes each
+// Blank expands CLI arguments, walks directories, and securely deletes each
 // item while streaming progress percentages and human-readable activity updates.
-func Gshred(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) {
+func Blank(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) {
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
 	for _, arg := range args {
@@ -69,7 +69,7 @@ func Gshred(ctx context.Context, args []string, progress chan<- float64, activit
 	}
 	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
 	concurrentShred(ctx, w, progress, activity)
-	slog.Info("gShred finished! All files and dir deleted.")
+	slog.Info("blank finished. All files and directories deleted.")
 }
 
 // shredDir removes a directory tree by invoking `rm -rf` via the provided context.
@@ -160,7 +160,7 @@ func concurrentShred(ctx context.Context, w *work, progress chan<- float64, acti
 			if err := ctx.Err(); err != nil {
 				return
 			}
-			sendActivity("Shredding %s", string(f))
+			sendActivity("Overwriting %s", string(f))
 			if err := shredFile(ctx, f); err != nil {
 				if stat, serr := os.Stat(string(f)); serr == nil {
 					slog.Error("Failed to shred file", "FILE", f, "MODE", stat.Mode(), "ERR", err)

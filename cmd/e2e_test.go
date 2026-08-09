@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"gshred/internal/testsupport"
+	"blank/internal/testsupport"
 )
 
 func TestHeadlessCLIShredsFiles(t *testing.T) {

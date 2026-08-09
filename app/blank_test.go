@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"gshred/internal/testsupport"
+	"blank/internal/testsupport"
 )
 
-func TestGshredEmitsProgressAndActivity(t *testing.T) {
+func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	logFile := testsupport.SetupStubCommands(t)
 
 	root := t.TempDir()
@@ -54,7 +54,7 @@ func TestGshredEmitsProgressAndActivity(t *testing.T) {
 		}
 	}()
 
-	Gshred(context.Background(), []string{root}, progressCh, activityCh)
+	Blank(context.Background(), []string{root}, progressCh, activityCh)
 	wg.Wait()
 
 	if len(progressVals) == 0 || progressVals[len(progressVals)-1] != 1 {
@@ -83,7 +83,7 @@ func TestGshredEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
-func TestGshredNoTargetsClosesChannels(t *testing.T) {
+func TestBlankNoTargetsClosesChannels(t *testing.T) {
 	progressCh := make(chan float64)
 	activityCh := make(chan string)
 
@@ -104,7 +104,7 @@ func TestGshredNoTargetsClosesChannels(t *testing.T) {
 	}()
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	Gshred(context.Background(), []string{missing}, progressCh, activityCh)
+	Blank(context.Background(), []string{missing}, progressCh, activityCh)
 
 	<-doneProgress
 	<-doneActivity

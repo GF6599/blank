@@ -1,4 +1,4 @@
-// gs
+// blank
 //
 // This is just a project to learn about cobra, bubble tea, goroutines
 // and some basic file manipulation with go.
@@ -10,7 +10,7 @@
 
 package main
 
-import "gshred/cmd"
+import "blank/cmd"
 
 func main() {
 	cmd.Execute()

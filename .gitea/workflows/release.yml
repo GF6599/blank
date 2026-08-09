@@ -39,7 +39,7 @@ jobs:
               fi
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -mod=readonly -trimpath -ldflags "-s -w" \
-                -o "dist/${goos}/gshred-${goos}-${goarch}${suffix}" .
+                -o "dist/${goos}/blank-${goos}-${goarch}${suffix}" .
             done
           done
 
@@ -47,26 +47,26 @@ jobs:
         run: |
           for goos in linux darwin windows; do
             cd "dist/${goos}"
-            sha256sum gshred-* > "SHA256SUMS-${goos}"
+            sha256sum blank-* > "SHA256SUMS-${goos}"
             cd -
           done
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gshred-linux-${{ github.ref_name }}
+          name: blank-linux-${{ github.ref_name }}
           path: dist/linux/*
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gshred-darwin-${{ github.ref_name }}
+          name: blank-darwin-${{ github.ref_name }}
           path: dist/darwin/*
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gshred-windows-${{ github.ref_name }}
+          name: blank-windows-${{ github.ref_name }}
           path: dist/windows/*
 
       - name: Publish GitHub release
@@ -74,9 +74,9 @@ jobs:
         with:
           api_key: ${{ secrets.GITEA_TOKEN }}
           files: |
-            dist/linux/gshred-*
+            dist/linux/blank-*
             dist/linux/SHA256SUMS-linux
-            dist/darwin/gshred-*
+            dist/darwin/blank-*
             dist/darwin/SHA256SUMS-darwin
-            dist/windows/gshred-*
+            dist/windows/blank-*
             dist/windows/SHA256SUMS-windows

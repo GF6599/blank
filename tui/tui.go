@@ -1,5 +1,5 @@
 // Package tui renders the Bubble Tea-based status UI, showing progress and
-// live activity logs while shredding runs in the background.
+// live activity logs while a run proceeds in the background.
 package tui
 
 import (
@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	gs "gshred/app"
+	"blank/app"
 )
 
 const (
@@ -33,8 +33,6 @@ type (
 	activityMsg   string
 )
 
-// model captures Bubble Tea state for the shredding session, including the
-// progress bar, scrollable viewport, and communication channels.
 type model struct {
 	progress   progress.Model
 	viewport   viewport.Model
@@ -87,7 +85,7 @@ func UIStart(args []string) {
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startGsCmd(m.ctx, m.args, m.progressCh, m.activityCh),
+		startBlankCmd(m.ctx, m.args, m.progressCh, m.activityCh),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
 	)
@@ -191,10 +189,9 @@ func (m model) View() string {
 	return builder.String()
 }
 
-// startGsCmd launches the shredding worker asynchronously.
-func startGsCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) tea.Cmd {
+func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) tea.Cmd {
 	return func() tea.Msg {
-		go gs.Gshred(ctx, args, progress, activity)
+		go app.Blank(ctx, args, progress, activity)
 		return nil
 	}
 }

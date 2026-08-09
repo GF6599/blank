@@ -1,4 +1,4 @@
-// Package cmd contains the root command for starting the gs application
+// Package cmd contains the root command for starting the blank application
 package cmd
 
 import (
@@ -9,8 +9,8 @@ import (
 	"os"
 	"sync"
 
-	"gshred/app"
-	tui "gshred/tui"
+	"blank/app"
+	tui "blank/tui"
 
 	"github.com/spf13/cobra"
 )
@@ -19,9 +19,10 @@ var (
 	noUI      bool
 	logToFile bool
 	rootCmd   = &cobra.Command{
-		Use:   "gshred [file|dir]...",
-		Short: "Concurrnet Shred command implemented in go.",
-		Long:  "Will use the bash 'shred -n 10 -uvz' command to shred any files or dir provided to gshred.",
+		Use:   "blank [file|dir]...",
+		Short: "Destroy files and directories beyond recovery.",
+		Long: "blank overwrites every file 10 times with random data and once with zeros, " +
+			"then removes the directories it walked. Deletion is permanent.",
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) == 0 {
 				cmd.Help()
@@ -40,7 +41,7 @@ var (
 
 func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
-	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to gshred.log")
+	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
 	_ = rootCmd.Flags().MarkHidden("no-ui")
 }
 
@@ -74,13 +75,13 @@ func runHeadless(args []string) {
 		}
 	}()
 
-	app.Gshred(ctx, args, progressCh, activityCh)
+	app.Blank(ctx, args, progressCh, activityCh)
 	wg.Wait()
 }
 
 func setupLogging(enable bool, suppress bool) func() {
 	if enable {
-		lf, err := os.OpenFile("gshred.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		lf, err := os.OpenFile("blank.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			if suppress {
 				slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))

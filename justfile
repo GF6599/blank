@@ -3,7 +3,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 export GOCACHE := justfile_directory() / ".gocache"
 
-BINARY := "gshred"
+BINARY := "blank"
 BIN_DIR := "bin"
 DIST_DIR := "dist"
 
