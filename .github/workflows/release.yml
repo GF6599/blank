@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["🚀release.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+
+      - name: Validate tag format
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^🚀release\.[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]; then
+            echo "Tag '$TAG' does not match 🚀release.yyyy.mm.dd"
+            exit 1
+          fi
+
+      # A tag can point at a commit CI never ran on, and a release cannot be
+      # quietly replaced the way a container tag can.
+      - run: just check
+
+      # The build matrix lives in the justfile, so a release builds what a
+      # developer builds. gh is preinstalled, which keeps the highest-privilege
+      # step free of any third-party action.
+      - run: just release-all
+      - run: just checksums
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --generate-notes dist/blank-* dist/SHA256SUMS
