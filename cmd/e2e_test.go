@@ -268,6 +268,94 @@ func TestYesSkipsTheQuestion(t *testing.T) {
 	}
 }
 
+// The log is written where the caller asked for it.
+// Given a path for the log, when a tree is destroyed, then the log is at that
+// path and names the file it destroyed.
+// Why it matters: the log is a manifest of what was destroyed and where it
+// lived, so writing it beside whoever ran the command leaves that record in a
+// directory they did not choose, and often did not expect.
+func TestTheLogLandsWhereItWasAsked(t *testing.T) {
+	// Given: a tree, and a path for the log well away from it.
+	root := t.TempDir()
+	secret := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(secret, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.log")
+
+	// When: the tree is destroyed with the log turned on.
+	out, code := run(t, "--no-ui", "--yes", "--log", manifest, root)
+	if code != 0 {
+		t.Fatalf("the run exited %d\n%s", code, out)
+	}
+
+	// Then: the log is at the path given, naming the file it destroyed.
+	body, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("reading the log: %v", err)
+	}
+	if !strings.Contains(string(body), secret) {
+		t.Fatalf("the log does not name %s:\n%s", secret, body)
+	}
+}
+
+// The log is readable only by the user who ran the command.
+// Given logging turned on, when the log is written, then no group or other
+// permission bit is set on it.
+// Why it matters: the log records the full path of every file the run touched,
+// so it is a manifest of what was destroyed and where it lived.
+func TestTheLogIsReadableOnlyByItsOwner(t *testing.T) {
+	// Given: a tree and a path for the log.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.log")
+
+	// When: the run writes it.
+	if out, code := run(t, "--no-ui", "--yes", "--log", manifest, root); code != 0 {
+		t.Fatalf("the run exited %d\n%s", code, out)
+	}
+
+	// Then: the file carries no group or other permission.
+	fi, err := os.Stat(manifest)
+	if err != nil {
+		t.Fatalf("expected a log file: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("the log is mode %04o, expected no group or other access", perm)
+	}
+}
+
+// A log that cannot be opened stops the run before it destroys anything.
+// Given a log path in a directory that does not exist, when the run is asked to
+// start, then it exits non-zero and the tree is untouched.
+// Why it matters: the log is the only record of what a run destroyed, so
+// carrying on without it destroys the tree and the record of it together, and
+// the caller learns that from a warning they have already scrolled past.
+func TestARunStopsWhenItsLogCannotBeOpened(t *testing.T) {
+	// Given: a tree, and a log path nothing can be written to.
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the victim: %v", err)
+	}
+	unwritable := filepath.Join(t.TempDir(), "no-such-directory", "manifest.log")
+
+	// When: the run is asked to start.
+	out, code := run(t, "--no-ui", "--yes", "--log", unwritable, root)
+
+	// Then: it refuses.
+	if code == 0 {
+		t.Fatalf("a run with an unwritable log exited 0\n%s", out)
+	}
+	// And: the tree is untouched.
+	body, err := os.ReadFile(victim)
+	if err != nil || string(body) != "payload" {
+		t.Fatalf("the run destroyed the tree anyway: contents are %q, err=%v", body, err)
+	}
+}
+
 func moduleRoot() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

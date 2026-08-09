@@ -18,7 +18,7 @@ import (
 
 var (
 	noUI      bool
-	logToFile bool
+	logPath   string
 	dryRun    bool
 	assumeYes bool
 	jobs      int
@@ -41,7 +41,10 @@ var (
 			}
 			// The log closes when this returns, so both modes below wait for the
 			// engine before they do.
-			closeLog := setupLogging(logToFile, !noUI)
+			closeLog, err := setupLogging(logPath, !noUI)
+			if err != nil {
+				return err
+			}
 			defer closeLog()
 			plan, err := app.Enumerate(args)
 			if err != nil {
@@ -77,7 +80,8 @@ var (
 
 func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
-	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
+	rootCmd.Flags().StringVar(&logPath, "log", "",
+		"Write the run log to this path. It names every file destroyed, so it is a manifest of what was on the disk")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be destroyed and destroy nothing")
 	rootCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Destroy without asking first")
 	rootCmd.Flags().IntVar(&jobs, "jobs", app.DefaultJobs,
@@ -127,30 +131,29 @@ func runHeadless(plan app.Plan, opts app.Options) error {
 	return err
 }
 
-func setupLogging(enable bool, suppress bool) func() {
-	if enable {
-		// The log names every path the run touched, so it is a manifest of what
-		// was destroyed and where it lived. Nobody else needs to read it.
-		lf, err := os.OpenFile("blank.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			if suppress {
-				slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
-			}
+// setupLogging points the default logger at path, and discards it entirely when
+// no path was given and the interface owns the terminal. A path that cannot be
+// opened is returned as an error rather than warned about, because a run that
+// destroys the tree and the record of it together leaves the caller nothing to
+// read afterwards.
+func setupLogging(path string, suppress bool) (func(), error) {
+	if path == "" {
+		if suppress {
+			slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
+		}
+		return func() {}, nil
+	}
+	// The log names every path the run touched, so it is a manifest of what was
+	// destroyed and where it lived. Nobody else needs to read it.
+	lf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the log file: %w", err)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{})))
+	return func() {
+		if err := lf.Close(); err != nil {
 			slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{})).
-				Error("Failed to open log file", "ERR", err)
-			return func() {}
+				Error("Failed to close the log file", "ERR", err)
 		}
-		logger := slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{}))
-		slog.SetDefault(logger)
-		return func() {
-			if err := lf.Close(); err != nil {
-				slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{})).
-					Error("Failed to close the log file", "ERR", err)
-			}
-		}
-	}
-	if suppress {
-		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
-	}
-	return func() {}
+	}, nil
 }

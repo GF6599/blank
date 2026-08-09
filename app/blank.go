@@ -133,7 +133,7 @@ type failures struct {
 }
 
 func (f *failures) add(path string, err error) {
-	slog.Error("Target survived", "PATH", path, "ERR", err)
+	slog.Error("Target survived", "PATH", displayText(path), "ERR", err)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.list = append(f.list, Failure{Path: path, Err: err})
@@ -207,7 +207,6 @@ func removeEntry(path string) error {
 // either way, so a file whose contents were never overwritten was unlinked all
 // the same: the caller lost the file and the plaintext stayed on the disk.
 func removeDir(path string) error {
-	slog.Info("Deleting directory", "DIR", path)
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove directory: %w", err)
 	}
@@ -255,6 +254,10 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 			fails.add(path, err)
 			stage = StageFailed
 		}
+		// One line per target, whatever became of it. This is the manifest
+		// --log exists to write, and it is the only record of what the run
+		// reached once the files themselves are gone.
+		slog.Info(verb, "PATH", displayText(path), "STAGE", stage)
 		sendEvent(verb, path, stage)
 	}
 
