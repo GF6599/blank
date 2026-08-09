@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"blank/app"
 )
 
 // A path the run would refuse cannot be marked.
@@ -58,6 +60,32 @@ func TestAProtectedRowReadsAsRefusedBeforeItIsPressed(t *testing.T) {
 	}
 	if !found {
 		t.Skip("this filesystem has no /etc to refuse")
+	}
+}
+
+// The selector never climbs into a directory the run protects.
+// Given a picker in a temporary tree, when the up key is pressed far more times
+// than the tree is deep, then it stops in a directory the run would accept, and
+// it says why it stopped.
+// Why it matters: refusing to open the selector in a protected directory buys
+// nothing if the up key walks into one, and every temporary directory on macOS
+// sits under /var, so the boundary is two or three presses away.
+func TestTheSelectorNeverClimbsIntoAProtectedDirectory(t *testing.T) {
+	// Given: a picker inside a temporary tree.
+	m := openPickerSized(t, t.TempDir(), 100, 30)
+
+	// When: the up key is pressed far past the root of that tree.
+	for range 40 {
+		m = press(t, m, "h")
+	}
+
+	// Then: it is somewhere the run would accept.
+	if err := app.NewGuard().Refuses(m.dir); err != nil {
+		t.Fatalf("the selector climbed into %s: %v", m.dir, err)
+	}
+	// And: the last press said why it went no further.
+	if view := m.View(); !strings.Contains(view, "protected") && !strings.Contains(view, "root of a filesystem") {
+		t.Fatalf("the selector stopped with no reason on screen:\n%s", view)
 	}
 }
 

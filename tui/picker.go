@@ -116,8 +116,11 @@ const (
 )
 
 type pickerModel struct {
-	list    list.Model
-	dir     string
+	list list.Model
+	dir  string
+	// One guard for the whole session. Building it resolves every protected
+	// path, and it keeps the answer for each directory it is asked about.
+	guard   *app.Guard
 	marked  map[string]bool
 	readErr error
 	// refusal is the answer to the key just pressed, so it lives until the next
@@ -136,7 +139,12 @@ func newPickerModel(dir string) pickerModel {
 		dir = abs
 	}
 	marked := map[string]bool{}
-	m := pickerModel{list: newPickerList(marked), dir: dir, marked: marked}
+	m := pickerModel{
+		list:   newPickerList(marked),
+		dir:    dir,
+		guard:  app.NewGuard(),
+		marked: marked,
+	}
 	m.load(dir)
 	return m
 }
@@ -146,18 +154,30 @@ func newPickerModel(dir string) pickerModel {
 func (m *pickerModel) load(dir string) {
 	found, err := os.ReadDir(dir)
 	m.dir, m.readErr = dir, err
-	// One guard for the whole listing. Building it resolves every protected
-	// path, which is a read of the filesystem per symlink on the list.
-	guard := app.NewGuard()
 	entries := make([]entry, 0, len(found))
 	for _, de := range found {
-		entries = append(entries, newEntry(dir, de, guard))
+		entries = append(entries, newEntry(dir, de, m.guard))
 	}
 	// A cursor left past the end of a shorter listing selects nothing at all,
 	// and a filter typed for one directory means nothing in the next.
 	m.list.ResetFilter()
 	m.list.SetItems(toItems(entries))
 	m.list.Select(0)
+}
+
+// The way up is the only way the selector can reach a protected directory. A
+// directory that holds one is refused itself, so no listing the selector is
+// allowed to show has one in it, and going down stays inside what is allowed.
+func (m *pickerModel) ascend() {
+	parent := filepath.Dir(m.dir)
+	if parent == m.dir {
+		return
+	}
+	if err := m.guard.Refuses(parent); err != nil {
+		m.refusal = err
+		return
+	}
+	m.load(parent)
 }
 
 func (m *pickerModel) toggle() {
@@ -249,9 +269,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "h", "left", "backspace":
-			if parent := filepath.Dir(m.dir); parent != m.dir {
-				m.load(parent)
-			}
+			m.ascend()
 			return m, nil
 		}
 	}
