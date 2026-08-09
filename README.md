@@ -44,8 +44,18 @@ $ echo $?
 1
 ```
 
-Read the exit code. A run that prints progress to 100% has still failed if the code is
-not 0, because progress counts targets attempted rather than targets destroyed.
+The status line under the progress bar reports the same verdict, so the interface and the
+exit code cannot disagree.
+
+| Status line | Exit code |
+| --- | --- |
+| `blanking` | The run is still going. |
+| `blanking complete` | 0. Every target was destroyed. |
+| `blanking failed, 2 targets survived` | 1. The error names them on stderr. |
+| `blanking cancelled` | The run stopped before it finished. |
+
+Read the exit code rather than the progress bar. The bar counts targets attempted rather
+than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
 
 ## Requirements
 
@@ -130,6 +140,9 @@ These are properties of the current implementation. Each one is reproducible.
 
 - **Scrolling does not hold during a run.** Every new target jumps the panel back to the
   newest row, so `k` and `j` only stay put once the run has finished.
+- **A target that fails before the walk queues it gets no row.** A directory the walk
+  cannot list is counted in the status line and named in the error, but no row in the
+  panel carries a `!` for it, because the run never reached it.
 - **A symlink argument destroys the target.** A symlink passed on the command line goes to
   `shred`, which follows it. A symlink found inside a walked directory is removed as a
   link, so only the top level is affected.
