@@ -134,6 +134,33 @@ def unlock_tree(root: Path) -> None:
                 log(f"  ! chmod skipped ({name}): {e}")
 
 
+# The same list app/guard.go refuses, because --force removes --root and
+# unlock_tree clears the permissions that would otherwise have stopped it.
+SYSTEM_PATHS = [
+    "/bin", "/boot", "/cores", "/dev", "/etc", "/home", "/lib", "/lib32",
+    "/lib64", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys",
+    "/usr", "/var",
+    "/Applications", "/Library", "/System", "/Users", "/Volumes", "/private",
+]
+
+
+def refuse_protected(root: Path) -> None:
+    """Stop on a root that holds everything else.
+
+    There is no override flag, matching the tool this generates data for. The
+    answer to a refusal is to name a narrower directory.
+    """
+    real = root.resolve()
+    if real.parent == real:
+        sys.exit(f"[!] {real} is the root of a filesystem. Refusing.")
+    protected = [Path(p).resolve() for p in SYSTEM_PATHS] + [Path.home().resolve()]
+    for p in protected:
+        if real == p:
+            sys.exit(f"[!] {real} is a protected path. Refusing.")
+        if p.is_relative_to(real):
+            sys.exit(f"[!] {real} holds the protected path {p}. Refusing.")
+
+
 def create_sparse_file(path: Path, size_bytes: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
@@ -254,6 +281,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     root = Path(args.root)
+    refuse_protected(root)
     if root.exists():
         if args.force:
             log(f"--force set; removing existing {root}")
