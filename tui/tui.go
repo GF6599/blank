@@ -19,12 +19,17 @@ const (
 	padding  = 2
 	maxWidth = 80
 
-	rosePineText   = "#e0def4"
-	rosePineSubtle = "#908caa"
-	rosePineMuted  = "#6e6a86"
-	rosePineLove   = "#eb6f92"
-	rosePinePine   = "#31748f"
-	rosePineFoam   = "#9ccfd8"
+	panelTitle = "activity"
+
+	// Everything the view draws besides the mark and the viewport: a leading
+	// blank, a blank under the mark, the progress row, the status row, a blank,
+	// the title rule, and the panel's bottom rule.
+	chromeRows = 7
+
+	// The panel holds this many rows whatever the terminal offers. Bubble Tea
+	// runs inline, so a view sized to the screen would claim the whole scrollback
+	// position and lose its top rows to the renderer's height clamp.
+	activityRows = 8
 )
 
 type (
@@ -34,38 +39,29 @@ type (
 )
 
 type model struct {
-	progress   progress.Model
-	viewport   viewport.Model
-	ctx        context.Context
-	cancel     context.CancelFunc
-	args       []string
-	progressCh chan float64
-	activityCh chan string
-	completed  bool
-	logs       []string
+	progress     progress.Model
+	viewport     viewport.Model
+	ctx          context.Context
+	cancel       context.CancelFunc
+	args         []string
+	progressCh   chan float64
+	activityCh   chan string
+	completed    bool
+	logs         []string
+	contentWidth int
+	termHeight   int
 }
 
-var (
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(rosePineSubtle)).
-			Render
-	logBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color(rosePineFoam)).
-			Foreground(lipgloss.Color(rosePineText)).
-			Padding(0, 1)
-	viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
-)
+var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 
 // UIStart boots the Bubble Tea UI and captures keyboard shortcuts for quitting
 // or scrolling the activity viewport.
 func UIStart(args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
-	vp.Style = logBoxStyle
 	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
-	progressBar.EmptyColor = rosePineMuted
-	progressBar.PercentageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(rosePineText))
+	progressBar.EmptyColor = rosePineHighlightMed
+	progressBar.PercentageStyle = lipgloss.NewStyle().Foreground(colorSubtle)
 	m := model{
 		progress:   progressBar,
 		viewport:   vp,
@@ -77,7 +73,7 @@ func UIStart(args []string) {
 		logs:       make([]string, 0, 16),
 	}
 	defer cancel()
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(m).Run(); err != nil {
 		slog.Error("TUI error", "ERR", err)
 	}
 }
@@ -116,14 +112,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		width := msg.Width - padding*2 - 4
-		width = min(maxWidth, width)
-		width = max(width, 10)
-		m.progress.Width = width
-		m.viewport.Width = width
-		height := msg.Height - 8
-		height = max(height, 5)
-		m.viewport.Height = height
+		m.termHeight = msg.Height
+		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), 8)
+		m.viewport.Width = m.contentWidth - 2
+		m.progress.Width = m.contentWidth - reservedForControls(m.contentWidth)
+
+		m.viewport.Height = max(min(activityRows, msg.Height-chromeRows-m.markLines()), 3)
+		m.viewport.SetContent(m.activityView())
 		return m, nil
 
 	// FrameMsg is sent when the progress bar wants to animate itself
@@ -161,7 +156,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case activityMsg:
 		m.logs = append(m.logs, string(msg))
-		m.viewport.SetContent(strings.Join(m.logs, "\n"))
+		m.viewport.SetContent(m.activityView())
 		m.viewport.GotoBottom()
 		return m, listenForActivityUpdate(m.ctx, m.activityCh)
 
@@ -170,23 +165,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// View lays out the progress bar, helper text, and log viewport.
+// The mark degrades to a single line on a small terminal, so the viewport height
+// has to read this rather than assume markRows.
+func (m model) markLines() int {
+	if markVisible(m.contentWidth, m.termHeight) {
+		return markRows
+	}
+	return 1
+}
+
+// Only the newest line is current, so the bracket pair tracks the work as it
+// moves down the list.
+func (m model) activityView() string {
+	rows := make([]string, len(m.logs))
+	for i, line := range m.logs {
+		rows[i] = markerRow(m.viewport.Width, line, i == len(m.logs)-1 && !m.completed)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// Every block shares one content column, so they line up on both edges.
 func (m model) View() string {
 	pad := strings.Repeat(" ", padding)
-	status := "Press q or Esc to quit"
-	if m.completed {
-		status = "Shredding complete — press q or Esc to close"
+	var b strings.Builder
+
+	b.WriteString("\n")
+	for _, line := range strings.Split(renderMark(m.contentWidth, m.termHeight), "\n") {
+		b.WriteString(pad)
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
-	var builder strings.Builder
-	builder.WriteString("\n")
-	builder.WriteString(pad)
-	builder.WriteString(m.progress.ViewAs(m.progress.Percent()))
-	builder.WriteString("\n")
-	builder.WriteString(pad)
-	builder.WriteString(helpStyle(status))
-	builder.WriteString("\n\n")
-	builder.WriteString(viewportWrapperStyle.Render(m.viewport.View()))
-	return builder.String()
+	b.WriteString("\n")
+
+	bar := m.progress.ViewAs(m.progress.Percent())
+	b.WriteString(pad)
+	b.WriteString(bar)
+	if ctrl := controlsFor(m.contentWidth); ctrl != "" {
+		gap := max(m.contentWidth-lipgloss.Width(bar)-lipgloss.Width(ctrl), 1)
+		b.WriteString(strings.Repeat(" ", gap))
+		b.WriteString(renderControls(ctrl))
+	}
+	b.WriteString("\n")
+
+	b.WriteString(pad)
+	b.WriteString(statusStyle.Render(clampHead(statusLine(m.completed), m.contentWidth)))
+	b.WriteString("\n\n")
+
+	b.WriteString(pad)
+	b.WriteString(frameTop(m.contentWidth, panelTitle))
+	b.WriteString("\n")
+	b.WriteString(viewportWrapperStyle.Render(panelSides.Render(m.viewport.View())))
+	return b.String()
 }
 
 func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) tea.Cmd {
