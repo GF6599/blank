@@ -1,44 +1,143 @@
-# gshred
+# 🧽 blank
 
-`gshred` wraps the Unix `shred` utility with a modern Cobra CLI and Charmbracelet Bubble Tea interface. It expands any file or directory arguments, securely overwrites each file, removes directories, and surfaces live progress plus an activity log inside the terminal UI.
+`blank` destroys files and directories so that the contents cannot be recovered. It gives
+you a Cobra command line and a Bubble Tea terminal interface that shows live progress and
+an activity log.
 
-## Project Structure
+> **Destruction is permanent. `blank` has no undo and no trash can. Read "Known
+> limitations" before you point it at anything you care about.**
 
-```text
-.
-├── cmd/           # Cobra root command wiring (flags, execution)
-├── app/           # Core shredding engine, walkers, and concurrency control
-├── tui/           # Bubble Tea UI: progress bar + scrollable activity log
-├── utils/         # Helper scripts (e.g., dummy data generators)
-├── main.go        # Entry point that invokes cmd.Execute
-├── justfile       # Common tasks: fmt, build, release
-└── AGENTS.md      # Contributor guidelines
-```
+## How it works
 
-## Architecture Overview
+`blank` expands each argument into a list of files and directories. It overwrites every
+file concurrently, then removes every directory.
 
 ```mermaid
 graph TD
-    A[CLI Entry main\.go] --> B[Cobra Command cmd]
-    B --> C[Bubble Tea UI tui]
-    C --> D[Shredding Engine app]
-    D --> E[OS Commands shred  rm -rf]
-    C --> F[Progress + Activity Channels]
-    D --> F
+    A[main.go] --> B[cmd: Cobra root command]
+    B --> C{--no-ui}
+    C -->|off| D[tui: Bubble Tea interface]
+    C -->|on| E[stdout printer]
+    D --> F[app: deletion engine]
+    E --> F
+    F --> G["shred -uzfn 10, once per file"]
+    F --> H["rm -rf, once per directory"]
+    F -. progress and activity .-> D
+    F -. progress and activity .-> E
 ```
 
-- `cmd/root.go` validates arguments and launches the TUI.
-- `tui/tui.go` renders the progress bar and a viewport showing the files currently being shredded; it also forwards quit/scroll keys.
-- `app/gshred.go` walks input paths, orchestrates concurrent shredders, and writes updates to the progress/activity channels.
+Each file gets 10 random overwrite passes plus a final zero pass, which is what
+`shred -uzfn 10` performs. Up to 100 files run at the same time.
 
-## Development Workflow
+## Requirements
 
-| Command      | Purpose                                                                      |
-| ------------ | ---------------------------------------------------------------------------- |
-| `just fmt`   | Run `gofmt` across the project.                                              |
-| `just build` | Resolve deps, format, and produce `bin/gshred`.                              |
-| `just run …` | Wrap `go run .` (TUI) with a local `GOCACHE`; pass any files/dirs.           |
-| `just test`  | Execute `go test ./...` with a writable cache path.                          |
-| `just e2e`   | Generate rich test data via `utils/gen-dummy-df.py` and shred it headlessly. |
+| Dependency | Why | Note |
+| --- | --- | --- |
+| Go 1.24.2 or later | To build the binary. | |
+| GNU `shred` on `PATH` | The engine runs it once per file. | macOS does not supply it. Run `brew install coreutils`. |
+| `rm` on `PATH` | The engine runs it once per directory. | Standard on Linux and macOS. |
 
-Use `--log` to redirect logs to `gshred.log` during TUI runs so stdout remains clean. Binaries and artifacts are written under `bin/` or `dist/` and should stay out of version control. When extending the repo, mirror the structure above so new modules remain easy to locate.
+Windows has neither program, so a Windows build starts and then fails on every file.
+
+## Install
+
+```sh
+just install
+```
+
+This builds the binary and writes it to `~/self-made-bin/blank`. That directory is not on
+`PATH` by default, so add an alias:
+
+```sh
+alias blk="$HOME/self-made-bin/blank"
+```
+
+## Usage
+
+```sh
+blk ./notes.txt ./old-project
+```
+
+The interface renders inline rather than taking over the screen, so the final frame stays
+in your scrollback after the program exits. That frame is the record of what was
+destroyed.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| `q`, `esc`, `ctrl+c` | Cancel the run and quit |
+| `k`, `up` | Scroll the activity panel up one line |
+| `j`, `down` | Scroll the activity panel down one line |
+| `b`, `pgup` | Scroll up half a page |
+| `f`, `pgdown` | Scroll down half a page |
+
+`ctrl+c` cancels the context. Files already overwritten stay destroyed.
+
+### Flags
+
+| Flag | Effect |
+| --- | --- |
+| `--log` | Write logs to `blank.log` in the working directory. Off by default. |
+| `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
+
+`blank.log` records the full path of every file the run touched, so treat it as a manifest
+of what you destroyed.
+
+## Known limitations
+
+These are properties of the current implementation. Each one is reproducible.
+
+- **A failed overwrite still reports success.** The engine counts a file as done whether
+  `shred` succeeded or failed, and the directory pass then runs `rm -rf`. A file that
+  failed to overwrite is therefore unlinked with its contents intact. The run prints 100%
+  and exits 0.
+- **The default mode hides every error.** The terminal interface sends the logger to
+  `io.Discard` unless you pass `--log`, and the activity channel never carries a failure.
+  The point above is invisible without `--log`.
+- **A symlink argument destroys the target.** A symlink passed on the command line goes to
+  `shred`, which follows it. A symlink found inside a walked directory is removed as a
+  link, so only the top level is affected.
+- **A FIFO blocks the run.** `shred` opens the FIFO and waits for a writer that never
+  arrives.
+- **There is no confirmation prompt and no dry run.** The program starts destroying as
+  soon as it parses the arguments, and it refuses no path.
+
+## Development
+
+```sh
+just          # list every recipe
+just check    # the full gate: format check, vet, staticcheck, race tests, build
+just run .    # go run . with the local build cache
+just e2e      # generate a dummy tree and delete it headlessly
+```
+
+`just check` is the gate. Run it before every commit and read its exit code.
+
+| Recipe | Purpose |
+| --- | --- |
+| `fmt`, `fmt-check` | Rewrite or report `gofmt` drift. |
+| `lint` | `go vet` plus `staticcheck`. |
+| `test`, `test-race` | Run the suite, with or without the race detector. |
+| `build`, `build-race` | Write the binary to `bin/`. |
+| `release <os> <arch>`, `release-all` | Cross compile into `dist/`. |
+| `checksums` | Write `dist/SHA256SUMS`. |
+| `clean` | Remove `bin/`, `dist/`, and the local build cache. |
+
+## Layout
+
+```text
+.
+├── main.go                 # Entry point. Calls cmd.Execute.
+├── cmd/root.go             # Cobra root command: flags, logging, mode choice.
+├── app/blank.go            # Walks the arguments and runs the deletion.
+├── tui/tui.go              # Bubble Tea model: state, sizing, layout.
+├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
+├── utils/gen-dummy-df.py   # Generates a dummy tree for `just e2e`.
+├── justfile                # Every task.
+└── AGENTS.md               # Contributor guidelines.
+```
+
+The terminal interface follows the house terminal idiom: ANSI_Shadow block art, a `[ ]`
+marker on the current row, square corners, and the Rose Pine palette. `tui/chrome.go` holds
+the one border value and the one palette that every other renderer reads.

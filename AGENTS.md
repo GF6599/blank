@@ -1,25 +1,36 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Structure and Module Organization
 
-The entry point (`main.go`) wires Cobra’s CLI in `cmd/`, the shredding engine lives in `app/`, and Bubble Tea UI layers sit in `tui/`. Keep filesystem helpers and future shared utilities in `utils/` (currently hosts tooling for dummy data). Generated binaries such as `gs/` or artifacts under `bin/` / `dist/` should not be checked in. Place new packages under a directory that mirrors their domain, and co-locate `_test.go` files beside the code they cover.
+The entry point (`main.go`) wires the Cobra CLI in `cmd/`, the deletion engine lives in `app/`, and the Bubble Tea interface sits in `tui/`. Inside `tui/`, `tui.go` holds the model and the layout, and `chrome.go` holds the frame around the content: the mark, the panel, the markers, and the palette. Keep filesystem helpers and shared utilities in `utils/`, which currently holds the dummy data generator. Do not check in build output under `bin/` or `dist/`. Place a new package in a directory that mirrors its domain, and put each `_test.go` beside the code it covers.
 
 ## Build, Test, and Development Commands
 
-- `just fmt` ensures the repo stays `gofmt`-clean.
-- `just build` (or `just build-race`) resolves deps, formats, and produces `bin/gshred`.
-- `go run . ~/Downloads/secret.txt` is the quickest local sanity check.
-- `go test ./...` should pass before every push; add `-race` for concurrency-heavy changes.
-- `just info` prints the version, commit, and build timestamp embedded via ldflags.
+- `just check` runs the full gate: format check, `go vet`, `staticcheck`, race tests, and build. Run it before every commit and read its exit code.
+- `just fmt` rewrites the tree to be `gofmt`-clean. `just fmt-check` reports drift without rewriting.
+- `just build` and `just build-race` produce `bin/blank`.
+- `just install` builds and installs to `~/self-made-bin/blank`.
+- `just e2e` generates a dummy tree with `utils/gen-dummy-df.py` and deletes it headlessly.
+- `just info` prints the git version, commit, and build date. These are shell variables printed to stdout. Nothing is embedded in the binary, because `LDFLAGS` carries only `-s -w`.
 
-## Coding Style & Naming Conventions
+## Coding Style and Naming Conventions
 
-Use Go 1.24 idioms: exported symbols require doc comments, indentation is tabs, and short-lived goroutine helpers can stay in the same file when scoped. CLI flags, commands, and Bubble Tea models follow lowerCamelCase field names (see `tui/model`). Prefer `log/slog` with structured keys already used in `app/gshred.go`; avoid `fmt.Println` except for Cobra help text. Scripts and assets should favor descriptive filenames like `utils/gen-dummy-df.py`.
+Use Go 1.24 idioms: exported symbols carry doc comments, indentation is tabs, and a short-lived goroutine helper may stay in the file that scopes it. CLI flags, commands, and Bubble Tea models use lowerCamelCase field names, as in `tui.model`. Prefer `log/slog` with the structured keys already used in `app/blank.go`. Avoid `fmt.Println` outside Cobra help text. Give a script or an asset a descriptive filename, as in `utils/gen-dummy-df.py`.
+
+`tui/chrome.go` holds one border value and one palette. Every renderer reads them. Do not introduce a second copy of a colour or a border rune.
+
+The mark is bare block art. The house terminal idiom calls for a braced `{name}` lockup, and this project drops the braces deliberately. Do not add them back during a sweep for consistency with another project. `TestMarkCarriesNoBraces` enforces it, and it covers both the block art and the wordmark that replaces it on a small terminal.
 
 ## Testing Guidelines
 
-Unit tests rely on the Go toolchain—no extra frameworks. Name tests `TestFeatureBehavior` in files ending with `_test.go`. Use `t.TempDir()` plus stub executables on `PATH` to safely simulate `shred` and `rm -rf`, and cover both success paths and error logging. Target meaningful coverage for concurrency primitives: validate progress channel closure, semaphore limits, and symlink handling. Run `go test ./app ./tui` (optionally with `-race`) before submitting.
+Tests use the Go toolchain alone, with no extra framework. Name a test `TestFeatureBehaviour` in a file ending `_test.go`. Use `t.TempDir()` and the stub executables in `internal/testsupport` to simulate `shred` and `rm` safely. Cover the success path and the error path.
 
-## Commit & Pull Request Guidelines
+Sweep a range of terminal sizes when you test the interface. A layout defect that under-budgets a row only overruns at the widths where the content nearly fits, so a test at three fixed sizes walks straight past it. `tui/chrome_test.go` shows the pattern.
 
-History shows short, imperative subjects (“Add justfile”, “Update dependencies”); keep using that format and limit to ~72 characters. Every pull request should summarize motivation, list test commands run (`just build`, `go test ./...`), and link any tracking issues. Include screenshots or terminal captures when changing TUI output or logging. Avoid bundling generated binaries; mention any security-impacting changes (e.g., tweaks to `shred` arguments) explicitly.
+Run `just check` before submitting.
+
+## Commit and Pull Request Guidelines
+
+History uses gitmoji subjects in the form `<emoji> <scope>: <summary>`, for example `✨ tui: Add the framed activity panel`. Keep the subject under 50 characters and default to subject-only. Add a body only when the subject and the diff together cannot be understood.
+
+A pull request states the motivation, lists the commands run, and links any tracking issue. Include a terminal capture when the change alters what the interface renders. Do not bundle build output. Call out any change to the deletion arguments explicitly, because those decide whether data is recoverable.
