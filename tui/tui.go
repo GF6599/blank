@@ -23,6 +23,10 @@ const (
 	padding  = 2
 	maxWidth = 80
 
+	// Every wording the chrome can show has to survive this, because below it
+	// there is nothing left to cut that still says which outcome a run reached.
+	minContentWidth = 8
+
 	panelTitle = "activity"
 
 	// Everything the view draws besides the mark and the viewport: a leading
@@ -162,7 +166,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
-		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), 8)
+		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), minContentWidth)
 		m.viewport.Width = m.contentWidth - 2 - scrollbarCells
 		m.progress.Width = m.contentWidth - reservedForControls(m.contentWidth)
 
@@ -348,7 +352,7 @@ func (m model) View() string {
 
 	outcome, survivors := m.outcome()
 	b.WriteString(pad)
-	b.WriteString(statusStyleFor(outcome).Render(clampHead(statusLine(outcome, survivors), m.contentWidth)))
+	b.WriteString(statusStyleFor(outcome).Render(statusLine(outcome, survivors, m.contentWidth)))
 	b.WriteString("\n\n")
 
 	b.WriteString(pad)

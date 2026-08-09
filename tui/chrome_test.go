@@ -323,7 +323,7 @@ func TestViewStaysCompactWhateverTheTerminalHeight(t *testing.T) {
 // likely to be written once and never reread.
 func TestStatusLineUsesNoEmDash(t *testing.T) {
 	for _, o := range allOutcomes() {
-		if got := statusLine(o, 2); strings.ContainsRune(got, '—') {
+		if got := statusLine(o, 2, maxWidth); strings.ContainsRune(got, '—') {
 			t.Fatalf("em dash in status line (outcome %d): %q", o, got)
 		}
 	}
@@ -336,14 +336,14 @@ func TestStatusLineUsesNoEmDash(t *testing.T) {
 // destroyed, so the one line an operator reads at the end must be built from
 // the engine's verdict and not from the bar reaching the right-hand edge.
 func TestOnlyAClearedRunReadsAsComplete(t *testing.T) {
-	if got := statusLine(runComplete, 0); !strings.Contains(got, "complete") {
+	if got := statusLine(runComplete, 0, maxWidth); !strings.Contains(got, "complete") {
 		t.Fatalf("a cleared run does not read as complete: %q", got)
 	}
 	for _, o := range allOutcomes() {
 		if o == runComplete {
 			continue
 		}
-		if got := statusLine(o, 2); strings.Contains(got, "complete") {
+		if got := statusLine(o, 2, maxWidth); strings.Contains(got, "complete") {
 			t.Fatalf("outcome %d claims completion: %q", o, got)
 		}
 	}
@@ -362,7 +362,7 @@ func TestFailedStatusLineCountsTheSurvivors(t *testing.T) {
 		{1, "1 target survived"},
 		{2, "2 targets survived"},
 	} {
-		if got := statusLine(runFailed, tc.survivors); !strings.Contains(got, tc.want) {
+		if got := statusLine(runFailed, tc.survivors, maxWidth); !strings.Contains(got, tc.want) {
 			t.Fatalf("status line for %d survivors is %q, expected it to contain %q", tc.survivors, got, tc.want)
 		}
 	}
@@ -374,12 +374,38 @@ func TestFailedStatusLineCountsTheSurvivors(t *testing.T) {
 // Why it matters: the engine refuses a bad --jobs value with a plain error, so
 // the count is not the only shape a failure arrives in.
 func TestFailedStatusLineSurvivesAnUncountableFailure(t *testing.T) {
-	got := statusLine(runFailed, 0)
+	got := statusLine(runFailed, 0, maxWidth)
 	if !strings.Contains(got, "failed") {
 		t.Fatalf("an uncountable failure does not read as failed: %q", got)
 	}
 	if strings.ContainsAny(got, "0123456789") {
 		t.Fatalf("an uncountable failure invented a count: %q", got)
+	}
+}
+
+// A narrow terminal never makes one outcome read as another.
+// Given every width the content column can take, when each outcome renders its
+// status, then no two of them read the same and none overruns the column.
+// Why it matters: every long wording opens with the word a run still in flight
+// shows, so a cut that leaves only that word reports a failed run as a working
+// one and the operator walks away from a tree that still holds plaintext.
+func TestNoColumnWidthMakesOneOutcomeReadAsAnother(t *testing.T) {
+	for w := minContentWidth; w <= maxWidth; w++ {
+		seen := make(map[string]runOutcome, len(allOutcomes()))
+		for _, o := range allOutcomes() {
+			// When: the outcome renders for a column of that width.
+			got := statusLine(o, 3, w)
+
+			// Then: no other outcome has already claimed that wording.
+			if prev, taken := seen[got]; taken {
+				t.Fatalf("width %d: outcome %d and outcome %d both read %q", w, prev, o, got)
+			}
+			seen[got] = o
+			// And: it fits the column it was given.
+			if cells := lipgloss.Width(got); cells > w {
+				t.Fatalf("width %d: %q measured %d cells", w, got, cells)
+			}
+		}
 	}
 }
 

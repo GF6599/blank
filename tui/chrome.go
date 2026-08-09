@@ -252,28 +252,49 @@ const (
 	runFailed
 )
 
-// statusLine reads "complete" for runComplete alone, so this line and the exit
-// code are built from the same verdict and cannot disagree. A failure with
-// nothing to count still says so, because an engine error that carries no list
-// is still an engine error.
-func statusLine(o runOutcome, survivors int) string {
+// statusWordings gives one outcome's line in every length it comes in, longest
+// first. Only the run in flight opens with "blanking": a cut of any other
+// wording would leave that word alone and report the wrong outcome. Each list
+// ends on a wording that fits minContentWidth.
+//
+// Only runComplete reads "complete", so this line and the exit code are built
+// from the same verdict and cannot disagree. A failure with nothing to count
+// still says so, because an engine error carrying no list is still an error.
+func statusWordings(o runOutcome, survivors int) []string {
 	switch o {
 	case runComplete:
-		return "blanking complete"
+		return []string{"blanking complete", "complete"}
 	case runCancelled:
-		return "blanking cancelled"
+		return []string{"blanking cancelled", "cancelled"}
 	case runFailed:
 		if survivors < 1 {
-			return "blanking failed"
+			return []string{"blanking failed", "failed"}
 		}
 		noun := "targets"
 		if survivors == 1 {
 			noun = "target"
 		}
-		return fmt.Sprintf("blanking failed, %d %s survived", survivors, noun)
+		return []string{
+			fmt.Sprintf("blanking failed, %d %s survived", survivors, noun),
+			fmt.Sprintf("failed, %d survived", survivors),
+			fmt.Sprintf("failed %d", survivors),
+			"failed",
+		}
 	default:
-		return "blanking"
+		return []string{"blanking"}
 	}
+}
+
+func statusLine(o runOutcome, survivors, width int) string {
+	wordings := statusWordings(o, survivors)
+	for _, w := range wordings {
+		if lipgloss.Width(w) <= width {
+			return w
+		}
+	}
+	// Unreachable while minContentWidth holds. It is here so a narrower column
+	// degrades rather than drawing a line too wide for the frame.
+	return clampHead(wordings[len(wordings)-1], width)
 }
 
 // The survivor count is the one line an operator must not skim past, so it
