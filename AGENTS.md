@@ -2,7 +2,7 @@
 
 ## Project Structure and Module Organization
 
-The entry point (`main.go`) wires the Cobra CLI in `cmd/`, the deletion engine lives in `app/`, and the Bubble Tea interface sits in `tui/`. Inside `tui/`, `tui.go` holds the model and the layout, and `chrome.go` holds the frame around the content: the mark, the panel, the markers, and the palette. Keep filesystem helpers and shared utilities in `utils/`, which currently holds the dummy data generator. Do not check in build output under `bin/` or `dist/`. Place a new package in a directory that mirrors its domain, and put each `_test.go` beside the code it covers.
+The entry point (`main.go`) wires the Cobra CLI in `cmd/`, the deletion engine lives in `app/`, and the Bubble Tea interface sits in `tui/`. Inside `tui/`, `tui.go` holds the model and the layout, and `chrome.go` holds the frame around the content: the mark, the panel, the markers, and the palette. Inside `app/`, `plan.go` expands the arguments and `guard.go` refuses the paths a run will not touch. Both run before anything is destroyed, so a change to either changes what `--dry-run` reports as well as what the run does. Keep filesystem helpers and shared utilities in `utils/`, which currently holds the dummy data generator. Do not check in build output under `bin/` or `dist/`. Place a new package in a directory that mirrors its domain, and put each `_test.go` beside the code it covers.
 
 ## Build, Test, and Development Commands
 
@@ -10,7 +10,7 @@ The entry point (`main.go`) wires the Cobra CLI in `cmd/`, the deletion engine l
 - `just fmt` rewrites the tree to be `gofmt`-clean. `just fmt-check` reports drift without rewriting.
 - `just build` and `just build-race` produce `bin/blank`.
 - `just install` builds and installs to `~/self-made-bin/blank`.
-- `just e2e` generates a dummy tree with `utils/gen-dummy-df.py` and deletes it headlessly.
+- `just e2e` generates a dummy tree with `utils/gen-dummy-df.py`, destroys it headlessly, and checks what survived. The tree holds a directory nobody can list, so the recipe fails when the run claims a clean sweep.
 - `just info` prints the git version, commit, and build date. These are shell variables printed to stdout. Nothing is embedded in the binary, because `LDFLAGS` carries only `-s -w`.
 
 ## Coding Style and Naming Conventions
@@ -23,7 +23,11 @@ The mark is bare block art. The house terminal idiom calls for a braced `{name}`
 
 ## Testing Guidelines
 
-Tests use the Go toolchain alone, with no extra framework. Name a test `TestFeatureBehaviour` in a file ending `_test.go`. Use `t.TempDir()` and the stub executables in `internal/testsupport` to simulate `shred` and `rm` safely. Cover the success path and the error path.
+Tests use the Go toolchain alone, with no extra framework. Name a test `TestFeatureBehaviour` in a file ending `_test.go`. Write everything a test creates under `t.TempDir()`. There is no subprocess left to stub, because the overwrite and every removal are standard library calls, so a test reads the bytes and the directory entries back off the disk. Cover the success path and the error path.
+
+Produce a filesystem fault through the seam that exists for it rather than trying to arrange the real one. `readDir` in `app/blank.go` and `currentUser` in `app/guard.go` are package variables a test replaces, which is the only way a listing failure and a home directory reach a test at all.
+
+`cmd/e2e_test.go` builds the binary once in `TestMain` and drives it through `run` and `runWithInput`. Put a command-level test there rather than calling `go run`, which compiles the module again on every call. Pass `--yes`, because a run asks before it destroys anything and reads a closed input as a refusal.
 
 Sweep a range of terminal sizes when you test the interface. A layout defect that under-budgets a row only overruns at the widths where the content nearly fits, so a test at three fixed sizes walks straight past it. `tui/chrome_test.go` shows the pattern.
 
