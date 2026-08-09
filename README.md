@@ -97,7 +97,12 @@ $ echo $?
 ```
 
 A target that survives keeps its directory. The removal refuses a directory that still
-holds something, so the file stays where the caller can find it.
+holds something, so the entry stays where the caller can find it.
+
+How much of a survivor is left depends on where the run stopped. A file the overwrite
+could not open still holds its contents. A file whose covers were written, and which then
+could not be renamed or unlinked, is already zeros. `blank` reports both, because both are
+targets it did not finish, and neither is a file it can promise anything about.
 
 The status line under the progress bar reports the same verdict, so the interface and the
 exit code cannot disagree.
