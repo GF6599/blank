@@ -230,7 +230,7 @@ These are properties of the current implementation. Each one is reproducible.
 just          # list every recipe
 just check    # the full gate: format check, vet, staticcheck, race tests, build
 just run .    # go run . with the local build cache
-just e2e      # generate a dummy tree and delete it headlessly
+just e2e      # generate a dummy tree, destroy it, and check what survived
 ```
 
 `just check` is the gate. Run it before every commit and read its exit code.

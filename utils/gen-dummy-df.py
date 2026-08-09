@@ -119,6 +119,21 @@ def set_times(path: Path, atime: int, mtime: int) -> None:
         log(f"  ! utime skipped on {path}: {e}")
 
 
+def unlock_tree(root: Path) -> None:
+    """Make every directory readable, so the tree can be removed again.
+
+    The walk is top-down because each directory is chmodded before it is
+    descended into, which is the only way it reaches what a mode 000 directory
+    holds. rmtree on its own stops at one and leaves the tree behind.
+    """
+    for parent, dirs, _ in os.walk(root, onerror=lambda e: log(f"  ! walk skipped: {e}")):
+        for name in dirs:
+            try:
+                os.chmod(os.path.join(parent, name), 0o700)
+            except OSError as e:
+                log(f"  ! chmod skipped ({name}): {e}")
+
+
 def create_sparse_file(path: Path, size_bytes: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
@@ -174,11 +189,12 @@ def build(root: Path, large_mb: int, many: int, depth: int) -> Path:
     make_fifo(root / "named_pipe")
     make_unix_socket(root / "unix_socket")
 
-    # Permission edge cases
-    # create_text_file(root / "no_read.txt", "no read please\n")
-    # (root / "no_list_dir").mkdir(exist_ok=True)
-    # make_no_perms(root / "no_read.txt")
-    # make_no_perms(root / "no_list_dir")
+    # Permission edge cases. no_list_dir holds a file, so a run that cannot list
+    # the directory cannot empty it either and has to leave it where it is.
+    create_text_file(root / "no_read.txt", "no read please\n")
+    create_text_file(root / "no_list_dir" / "unreachable.txt", "cannot be reached\n")
+    make_no_perms(root / "no_read.txt")
+    make_no_perms(root / "no_list_dir")
 
     # Timestamps (old & future)
     old = int(datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
@@ -241,7 +257,8 @@ def main() -> None:
     if root.exists():
         if args.force:
             log(f"--force set; removing existing {root}")
-            shutil.rmtree(root, ignore_errors=True)
+            unlock_tree(root)
+            shutil.rmtree(root)
         else:
             log(
                 f"{root} already exists. Use --force to recreate or choose another --root."
@@ -249,7 +266,7 @@ def main() -> None:
             sys.exit(1)
     root = build(root, args.large_file_size, args.many_files, args.depth)
     log(f"Created test data under: {root}")
-    log(f"Tip: when you're done, remove it with: rm -rf {root}")
+    log(f"Tip: when you're done, remove it with: chmod -R u+rwX {root} && rm -rf {root}")
 
 
 if __name__ == "__main__":
