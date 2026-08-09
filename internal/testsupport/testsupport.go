@@ -8,8 +8,13 @@ import (
 	"testing"
 )
 
-// SetupStubCommands prepends fake shred/rm binaries to PATH that log activity
-// and delegate to the system rm so tests can run without touching real data.
+// FailMarker names the environment variable the shred stub reads. A target whose
+// path contains the value fails, so a test can drive the error path without
+// needing a file the real shred cannot touch.
+const FailMarker = "BLANK_STUB_FAIL"
+
+// SetupStubCommands prepends fake shred and rm binaries to PATH that log every
+// call and delegate to the system rm, so tests never touch real data.
 func SetupStubCommands(t *testing.T) string {
 	t.Helper()
 	stubDir := t.TempDir()
@@ -29,10 +34,14 @@ for arg in "$@"; do
 	target="$arg"
 done
 printf '%%s %%s\n' "shred" "$target" >> "$log"
+if [ -n "${%s:-}" ] && [ "${target#*"${%s}"}" != "$target" ]; then
+	echo "shred: $target: simulated failure" >&2
+	exit 1
+fi
 if [ -n "$target" ] && [ -e "$target" ]; then
 	"$REAL_RM" -f "$target"
 fi
-`, logFile, realRm))
+`, logFile, realRm, FailMarker, FailMarker))
 
 	writeExecutable(t, filepath.Join(stubDir, "rm"), fmt.Sprintf(`#!/bin/sh
 set -eu

@@ -23,18 +23,21 @@ var (
 		Short: "Destroy files and directories beyond recovery.",
 		Long: "blank overwrites every file 10 times with random data and once with zeros, " +
 			"then removes the directories it walked. Deletion is permanent.",
-		Run: func(cmd *cobra.Command, args []string) {
+		// A failure has to reach the exit code, so the command returns it and
+		// keeps the usage text for a usage error.
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				cmd.Help()
-				return
+				return cmd.Help()
 			}
+			// The log closes when this returns, so both modes below wait for the
+			// engine before they do.
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
 			if noUI {
-				runHeadless(args)
-				return
+				return runHeadless(args)
 			}
-			tui.UIStart(args)
+			return tui.UIStart(args)
 		},
 	}
 )
@@ -46,13 +49,13 @@ func init() {
 }
 
 func Execute() {
+	// Cobra has already written the error to stderr.
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
 		os.Exit(1)
 	}
 }
 
-func runHeadless(args []string) {
+func runHeadless(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -75,8 +78,9 @@ func runHeadless(args []string) {
 		}
 	}()
 
-	app.Blank(ctx, args, progressCh, activityCh)
+	err := app.Blank(ctx, args, progressCh, activityCh)
 	wg.Wait()
+	return err
 }
 
 func setupLogging(enable bool, suppress bool) func() {

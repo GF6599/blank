@@ -29,6 +29,24 @@ graph TD
 Each file gets 10 random overwrite passes plus a final zero pass, which is what
 `shred -uzfn 10` performs. Up to 100 files run at the same time.
 
+## What happens when a target survives
+
+`blank` exits non-zero and names every target it did not destroy, on stderr, in both
+modes. A target survives when the walk cannot list a directory, when the overwrite exits
+non-zero, or when the directory removal fails.
+
+```console
+$ blk ./tree
+Error: 2 targets survived the run
+  /home/dev/tree/locked: read directory: open /home/dev/tree/locked: permission denied
+  /home/dev/tree: rm -rf failed: exit status 1 (output: rm: /home/dev/tree: Directory not empty)
+$ echo $?
+1
+```
+
+Read the exit code. A run that prints progress to 100% has still failed if the code is
+not 0, because progress counts targets attempted rather than targets destroyed.
+
 ## Requirements
 
 | Dependency | Why | Note |
@@ -88,13 +106,9 @@ of what you destroyed.
 
 These are properties of the current implementation. Each one is reproducible.
 
-- **A failed overwrite still reports success.** The engine counts a file as done whether
-  `shred` succeeded or failed, and the directory pass then runs `rm -rf`. A file that
-  failed to overwrite is therefore unlinked with its contents intact. The run prints 100%
-  and exits 0.
-- **The default mode hides every error.** The terminal interface sends the logger to
-  `io.Discard` unless you pass `--log`, and the activity channel never carries a failure.
-  The point above is invisible without `--log`.
+- **The activity panel does not show a failure while the run proceeds.** The panel carries
+  only the target being worked on. A failure appears when the program exits, not when it
+  happens, so a long run gives no live sign that something survived.
 - **A symlink argument destroys the target.** A symlink passed on the command line goes to
   `shred`, which follows it. A symlink found inside a walked directory is removed as a
   link, so only the top level is affected.

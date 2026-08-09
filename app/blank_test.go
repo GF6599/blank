@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,40 @@ import (
 
 	"blank/internal/testsupport"
 )
+
+type result struct {
+	err      error
+	progress []float64
+	activity []string
+}
+
+// runBlank drives the engine with a collector on each channel, so a test reads
+// the outcome without repeating the fan-in.
+func runBlank(t *testing.T, args ...string) result {
+	t.Helper()
+	progressCh := make(chan float64)
+	activityCh := make(chan string)
+
+	var res result
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for p := range progressCh {
+			res.progress = append(res.progress, p)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for msg := range activityCh {
+			res.activity = append(res.activity, msg)
+		}
+	}()
+
+	res.err = Blank(context.Background(), args, progressCh, activityCh)
+	wg.Wait()
+	return res
+}
 
 func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	logFile := testsupport.SetupStubCommands(t)
@@ -32,35 +67,15 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 		t.Fatalf("creating symlink: %v", err)
 	}
 
-	progressCh := make(chan float64)
-	activityCh := make(chan string)
+	res := runBlank(t, root)
 
-	var progressVals []float64
-	var activityVals []string
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		for p := range progressCh {
-			progressVals = append(progressVals, p)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for msg := range activityCh {
-			activityVals = append(activityVals, msg)
-		}
-	}()
-
-	Blank(context.Background(), []string{root}, progressCh, activityCh)
-	wg.Wait()
-
-	if len(progressVals) == 0 || progressVals[len(progressVals)-1] != 1 {
-		t.Fatalf("expected final progress of 1, got %v", progressVals)
+	if res.err != nil {
+		t.Fatalf("expected a clean run, got %v", res.err)
 	}
-	if len(activityVals) == 0 {
+	if len(res.progress) == 0 || res.progress[len(res.progress)-1] != 1 {
+		t.Fatalf("expected final progress of 1, got %v", res.progress)
+	}
+	if len(res.activity) == 0 {
 		t.Fatalf("expected activity messages, got none")
 	}
 
@@ -83,29 +98,161 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
-func TestBlankNoTargetsClosesChannels(t *testing.T) {
-	progressCh := make(chan float64)
-	activityCh := make(chan string)
+// A directory the walk cannot read is reported, not skipped in silence.
+// Given a directory with no read permission, when the run finishes, then it
+// returns an error naming that directory and the files inside are still there.
+// Why it matters: os.ReadDir failing looks exactly like an empty directory, so
+// the contents are never queued, never overwritten, and never counted, and the
+// run reports complete success over data that is still on disk.
+func TestBlankReportsAnUnreadableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the read cannot fail")
+	}
+	testsupport.SetupStubCommands(t)
 
-	doneProgress := make(chan struct{})
-	go func() {
-		for range progressCh {
-			t.Error("unexpected progress message")
+	// Given: a tree holding one readable file and one directory nobody can read.
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatalf("creating locked dir: %v", err)
+	}
+	hidden := filepath.Join(locked, "hidden.txt")
+	if err := os.WriteFile(hidden, []byte("still-here"), 0o600); err != nil {
+		t.Fatalf("writing hidden file: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("locking dir: %v", err)
+	}
+	// TempDir cannot clean up a directory it cannot enter.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: it reports the directory it could not read.
+	if res.err == nil {
+		t.Fatalf("unreadable directory reported success")
+	}
+	if !strings.Contains(res.err.Error(), locked) {
+		t.Fatalf("error does not name the directory: %v", res.err)
+	}
+	// And: the file inside is untouched, which is what the error is about.
+	// The test has to unlock the directory to look, exactly as the engine could
+	// not.
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatalf("unlocking dir: %v", err)
+	}
+	if body, err := os.ReadFile(hidden); err != nil || string(body) != "still-here" {
+		t.Fatalf("expected the hidden file intact, got %q err=%v", body, err)
+	}
+}
+
+// A directory the walk cannot list is reported even when its removal succeeds.
+// Given a directory whose listing fails, when the run finishes, then it returns
+// an error naming the listing failure, and no file inside was ever overwritten.
+// Why it matters: the removal pass runs rm -rf, which sweeps the contents away
+// whether or not the walk ever saw them, so a swallowed listing error destroys
+// files without overwriting them and reports a clean run.
+func TestBlankReportsADirectoryItCannotList(t *testing.T) {
+	logFile := testsupport.SetupStubCommands(t)
+
+	// Given: an ordinary tree that rm can remove without trouble.
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("creating sub dir: %v", err)
+	}
+	inside := filepath.Join(sub, "inside.txt")
+	if err := os.WriteFile(inside, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing inside file: %v", err)
+	}
+
+	// And: listing that one directory fails, which nothing else notices.
+	real := readDir
+	readDir = func(name string) ([]os.DirEntry, error) {
+		if name == sub {
+			return nil, errors.New("simulated listing failure")
 		}
-		close(doneProgress)
-	}()
+		return real(name)
+	}
+	t.Cleanup(func() { readDir = real })
 
-	doneActivity := make(chan struct{})
-	go func() {
-		for range activityCh {
-			t.Error("unexpected activity message")
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: it reports the directory it could not list.
+	if res.err == nil {
+		t.Fatalf("unlistable directory reported success")
+	}
+	if !strings.Contains(res.err.Error(), "simulated listing failure") {
+		t.Fatalf("error does not name the listing failure: %v", res.err)
+	}
+	// And: the file inside was removed without ever being overwritten, which is
+	// the data loss the error exists to announce.
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("reading stub log: %v", err)
+	}
+	if strings.Contains(string(data), "shred "+inside) {
+		t.Fatalf("expected %s never to reach shred, got %s", inside, string(data))
+	}
+}
+
+// A file the overwrite fails on is reported and left on disk.
+// Given a file whose overwrite exits non-zero, when the run finishes, then it
+// returns an error naming that file.
+// Why it matters: counting a failed overwrite as done let the directory pass
+// unlink the file with its contents intact, and the run still exited zero.
+func TestBlankReportsAFailedOverwrite(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given: two files, one of which the overwrite refuses.
+	root := t.TempDir()
+	doomed := filepath.Join(root, "ordinary.txt")
+	stubborn := filepath.Join(root, "refuses.txt")
+	for _, p := range []string{doomed, stubborn} {
+		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
 		}
-		close(doneActivity)
-	}()
+	}
+	t.Setenv(testsupport.FailMarker, "refuses.txt")
 
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: it names the file the overwrite could not destroy.
+	if res.err == nil {
+		t.Fatalf("failed overwrite reported success")
+	}
+	if !strings.Contains(res.err.Error(), stubborn) {
+		t.Fatalf("error does not name the file: %v", res.err)
+	}
+	// And: the file that did overwrite is gone, so the run was not abandoned.
+	if _, err := os.Stat(doomed); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed, err=%v", doomed, err)
+	}
+}
+
+// An argument that does not exist is reported rather than ignored.
+// Given a path with nothing at it, when the run finishes, then it returns an
+// error naming the path and closes both channels.
+// Why it matters: a mistyped argument used to exit zero having destroyed
+// nothing, which reads exactly like a successful run.
+func TestBlankReportsAMissingArgument(t *testing.T) {
+	// Given / When: a path that was never created.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	Blank(context.Background(), []string{missing}, progressCh, activityCh)
+	res := runBlank(t, missing)
 
-	<-doneProgress
-	<-doneActivity
+	// Then: the run reports it. Reaching this line at all proves both channels
+	// closed, because runBlank waits on them.
+	if res.err == nil {
+		t.Fatalf("missing argument reported success")
+	}
+	if !strings.Contains(res.err.Error(), missing) {
+		t.Fatalf("error does not name the path: %v", res.err)
+	}
+	// And: nothing was reported as progress, because there was no work.
+	if len(res.progress) != 0 {
+		t.Fatalf("expected no progress, got %v", res.progress)
+	}
 }

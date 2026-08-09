@@ -3,12 +3,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -21,7 +24,64 @@ type (
 var (
 	shredBinary = "shred"
 	rmBinary    = "rm"
+	// A listing failure is the one fault the filesystem cannot be made to
+	// produce on demand, so the walk reads the directory through this.
+	readDir = os.ReadDir
 )
+
+// Failure names one target the run did not destroy.
+type Failure struct {
+	Path string
+	Err  error
+}
+
+// IncompleteRun reports the targets that survived. The caller believes they are
+// gone, so the error names them rather than only counting them.
+type IncompleteRun struct {
+	Failures []Failure
+}
+
+// Past this many the message stops being readable, and the log holds the rest.
+const failuresNamed = 10
+
+func (r *IncompleteRun) Error() string {
+	noun := "targets"
+	if len(r.Failures) == 1 {
+		noun = "target"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d %s survived the run", len(r.Failures), noun)
+	for i, f := range r.Failures {
+		if i == failuresNamed {
+			fmt.Fprintf(&b, "\n  and %d more", len(r.Failures)-failuresNamed)
+			break
+		}
+		fmt.Fprintf(&b, "\n  %s: %v", f.Path, f.Err)
+	}
+	return b.String()
+}
+
+// failures collects survivors from every goroutine that overwrites a file.
+type failures struct {
+	mu   sync.Mutex
+	list []Failure
+}
+
+func (f *failures) add(path string, err error) {
+	slog.Error("Target survived", "PATH", path, "ERR", err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.list = append(f.list, Failure{Path: path, Err: err})
+}
+
+func (f *failures) err() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.list) == 0 {
+		return nil
+	}
+	return &IncompleteRun{Failures: slices.Clone(f.list)}
+}
 
 // work groups files and directories queued for secure deletion.
 type work struct {
@@ -34,30 +94,55 @@ func (w *work) len() int {
 	return len(w.files) + len(w.directories)
 }
 
+type kind int
+
+const (
+	kindFile kind = iota
+	kindDir
+	kindSymlink
+)
+
+// classify reads the path once. The walk needs both answers for every entry,
+// and a single Lstat carries them.
+func classify(path string) (kind, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return kindFile, err
+	}
+	switch {
+	case fi.Mode()&os.ModeSymlink != 0:
+		return kindSymlink, nil
+	case fi.IsDir():
+		return kindDir, nil
+	default:
+		return kindFile, nil
+	}
+}
+
 // Blank expands CLI arguments, walks directories, and securely deletes each
-// item while streaming progress percentages and human-readable activity updates.
-func Blank(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) {
+// item while streaming progress percentages and human-readable activity
+// updates. It returns an error naming every target that survived.
+func Blank(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) error {
 	// Local workload to avoid global mutable state accumulation / data races
 	w := &work{}
+	fails := &failures{}
 	for _, arg := range args {
 		// Convert to absolute path
 		absolutePath, err := filepath.Abs(arg)
 		if err != nil {
-			slog.Error("Failed to find absolute path of file", "PATH", arg, "ERR", err)
+			fails.add(arg, fmt.Errorf("resolve path: %w", err))
 			continue
 		}
-		isdir, err := isDir(absolutePath)
+		k, err := classify(absolutePath)
 		if err != nil {
-			slog.Error("Failed to check weather path is a dir", "PATH", absolutePath, "ERR", err)
+			fails.add(absolutePath, fmt.Errorf("read path: %w", err))
 			continue
 		}
-		if isdir {
-			if err := walk(ctx, w, absolutePath); err != nil {
-				slog.Error("Failed to walk the directory", "PATH", absolutePath, "ERR", err)
-			}
-		} else {
-			w.files = append(w.files, file(absolutePath))
+		if k == kindDir {
+			walk(w, fails, absolutePath)
+			continue
 		}
+		w.files = append(w.files, file(absolutePath))
 	}
 	if w.len() == 0 {
 		slog.Info("No files or directories to shred")
@@ -65,11 +150,15 @@ func Blank(ctx context.Context, args []string, progress chan<- float64, activity
 		if activity != nil {
 			close(activity)
 		}
-		return
+		return fails.err()
 	}
 	slog.Info("Number of files / directories to shred", "TOTAL", w.len())
-	concurrentShred(ctx, w, progress, activity)
+	concurrentShred(ctx, w, fails, progress, activity)
+	if err := fails.err(); err != nil {
+		return err
+	}
 	slog.Info("blank finished. All files and directories deleted.")
+	return nil
 }
 
 // shredDir removes a directory tree by invoking `rm -rf` via the provided context.
@@ -93,7 +182,7 @@ func shredFile(ctx context.Context, f file) error {
 
 // concurrentShred fan-outs shredding work, limits in-flight jobs via a
 // semaphore, and emits live progress plus optional activity updates.
-func concurrentShred(ctx context.Context, w *work, progress chan<- float64, activity chan<- string) {
+func concurrentShred(ctx context.Context, w *work, fails *failures, progress chan<- float64, activity chan<- string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -106,9 +195,6 @@ func concurrentShred(ctx context.Context, w *work, progress chan<- float64, acti
 	var wg sync.WaitGroup
 
 	total := w.len()
-	if total == 0 {
-		return
-	}
 	var done int64
 
 	sendActivity := func(format string, args ...any) {
@@ -154,7 +240,7 @@ func concurrentShred(ctx context.Context, w *work, progress chan<- float64, acti
 			}
 			defer func() {
 				<-sema
-				update() // count this file (whether success or failure)
+				update()
 				wg.Done()
 			}()
 			if err := ctx.Err(); err != nil {
@@ -163,10 +249,9 @@ func concurrentShred(ctx context.Context, w *work, progress chan<- float64, acti
 			sendActivity("Overwriting %s", string(f))
 			if err := shredFile(ctx, f); err != nil {
 				if stat, serr := os.Stat(string(f)); serr == nil {
-					slog.Error("Failed to shred file", "FILE", f, "MODE", stat.Mode(), "ERR", err)
-				} else {
-					slog.Error("Failed to shred file", "FILE", f, "STAT_ERR", serr, "ERR", err)
+					err = fmt.Errorf("%w (mode %s)", err, stat.Mode())
 				}
+				fails.add(string(f), err)
 			}
 		}(f)
 	}
@@ -181,80 +266,40 @@ func concurrentShred(ctx context.Context, w *work, progress chan<- float64, acti
 		}
 		sendActivity("Deleting directory %s", string(dir))
 		if err := shredDir(ctx, dir); err != nil {
-			slog.Error("Failed to delete dir", "DIR", dir, "ERR", err)
+			fails.add(string(dir), err)
 		}
 		update()
 	}
 }
 
-// dirents reads directory entries and logs any failure.
-func dirents(dir string) []fs.DirEntry {
-	files, err := os.ReadDir(dir)
-	if err != nil {
-		slog.Warn("Failed to read dir contents", "DIR", dir, "ERR", err)
-		return nil
-	}
-	return files
-}
-
-// isDir reports whether the given path refers to a directory.
-func isDir(path string) (bool, error) {
-	f, err := os.Lstat(path)
-	if err != nil {
-		slog.Warn("Failed to check isdir", "PATH", path, "ERR", err)
-		return false, err
-	}
-	return f.IsDir(), nil
-}
-
-// isSymLink reports whether the path is a symbolic link.
-func isSymLink(path string) (bool, error) {
-	f, err := os.Lstat(path)
-	if err != nil {
-		slog.Warn("Failed to check isSymLink", "PATH", path, "ERR", err)
-		return false, err
-	}
-	if f.Mode()&os.ModeSymlink != 0 {
-		slog.Warn("Symlink encountered", "PATH", path)
-		return true, nil
-	}
-	return false, nil
-}
-
-// walk recursively collects files/directories, following actual directories but
-// deleting symbolic links to avoid shredding the linked target.
-func walk(ctx context.Context, w *work, dir string) error {
+// walk collects the tree under dir. A directory it cannot read is recorded
+// rather than skipped, because os.ReadDir failing looks exactly like an empty
+// directory and the files inside would otherwise never be queued.
+func walk(w *work, fails *failures, dir string) {
 	w.directories = append(w.directories, directory(dir))
-	de := dirents(dir)
-	for _, f := range de {
-		fp := filepath.Join(dir, f.Name())
-
-		// Skip / remove symlinks
-		if isSymbolicLink, err := isSymLink(fp); err != nil {
-			slog.Error("Problem reading info on path", "PATH", fp, "ERR", err)
-			continue
-		} else if isSymbolicLink {
-			slog.Info("Symbolic link detected, removing with 'rm -rf'", "PATH", fp)
-			cmd := exec.CommandContext(ctx, rmBinary, "-rf", fp)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				slog.Error("Failed to remove symbolic link", "PATH", fp, "ERR", err, "OUT", string(out))
-			}
-			continue
-		}
-
-		isDirectory, err := isDir(fp)
-		if err != nil {
-			slog.Warn("Ignoring error and continuing walk", "PATH", fp, "ERR", err)
-			continue
-		}
-		if isDirectory {
-			// Do not append here again; walk() will append when entering
-			if err := walk(ctx, w, fp); err != nil {
-				return err
-			}
-			continue
-		}
-		w.files = append(w.files, file(fp))
+	entries, err := readDir(dir)
+	if err != nil {
+		fails.add(dir, fmt.Errorf("read directory: %w", err))
+		return
 	}
-	return nil
+	for _, e := range entries {
+		fp := filepath.Join(dir, e.Name())
+		k, err := classify(fp)
+		if err != nil {
+			fails.add(fp, fmt.Errorf("read path: %w", err))
+			continue
+		}
+		switch k {
+		case kindSymlink:
+			// os.Remove unlinks the link and never follows it to the target.
+			// Unlike rm -rf it also reports a removal that failed.
+			if err := os.Remove(fp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				fails.add(fp, fmt.Errorf("remove symlink: %w", err))
+			}
+		case kindDir:
+			walk(w, fails, fp)
+		default:
+			w.files = append(w.files, file(fp))
+		}
+	}
 }

@@ -4,6 +4,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -46,6 +47,7 @@ type model struct {
 	args         []string
 	progressCh   chan float64
 	activityCh   chan string
+	done         chan error
 	completed    bool
 	logs         []string
 	contentWidth int
@@ -55,8 +57,9 @@ type model struct {
 var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
 
 // UIStart boots the Bubble Tea UI and captures keyboard shortcuts for quitting
-// or scrolling the activity viewport.
-func UIStart(args []string) {
+// or scrolling the activity viewport. It returns the engine's own error, and it
+// does not return before the engine stops.
+func UIStart(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	vp := viewport.New(0, 0)
 	progressBar := progress.New(progress.WithScaledGradient(rosePineLove, rosePinePine))
@@ -70,18 +73,26 @@ func UIStart(args []string) {
 		args:       args,
 		progressCh: make(chan float64),
 		activityCh: make(chan string),
+		done:       make(chan error, 1),
 		logs:       make([]string, 0, 16),
 	}
 	defer cancel()
-	if _, err := tea.NewProgram(m).Run(); err != nil {
-		slog.Error("TUI error", "ERR", err)
+
+	_, runErr := tea.NewProgram(m).Run()
+	// Stop the engine before waiting for it. Once the interface is gone nobody
+	// reads the progress and activity channels, so a send would block forever.
+	cancel()
+	if runErr != nil {
+		slog.Error("TUI error", "ERR", runErr)
+		return fmt.Errorf("interface failed: %w", runErr)
 	}
+	return <-m.done
 }
 
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startBlankCmd(m.ctx, m.args, m.progressCh, m.activityCh),
+		startBlankCmd(m.ctx, m.args, m.progressCh, m.activityCh, m.done),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
 	)
@@ -218,9 +229,9 @@ func (m model) View() string {
 	return b.String()
 }
 
-func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string) tea.Cmd {
+func startBlankCmd(ctx context.Context, args []string, progress chan<- float64, activity chan<- string, done chan<- error) tea.Cmd {
 	return func() tea.Msg {
-		go app.Blank(ctx, args, progress, activity)
+		go func() { done <- app.Blank(ctx, args, progress, activity) }()
 		return nil
 	}
 }
