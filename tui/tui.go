@@ -81,9 +81,12 @@ type model struct {
 	aborted       bool
 	completed     bool
 	ticking       bool
-	rows          []activityRow
-	contentWidth  int
-	termHeight    int
+	// Named for the false case, so a model built as a literal follows the run
+	// without having to say so.
+	detached     bool
+	rows         []activityRow
+	contentWidth int
+	termHeight   int
 }
 
 var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
@@ -150,19 +153,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "up", "k":
 			m.viewport.ScrollUp(1)
-			return m, nil
 		case "down", "j":
 			m.viewport.ScrollDown(1)
-			return m, nil
 		case "pgup", "b":
 			m.viewport.HalfPageUp()
-			return m, nil
 		case "pgdown", "f":
 			m.viewport.HalfPageDown()
-			return m, nil
 		default:
 			return m, nil
 		}
+		m.detached = !m.viewport.AtBottom()
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
@@ -209,7 +210,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case activityMsg:
 		m.note(app.Event(msg))
 		m.viewport.SetContent(m.activityView())
-		m.viewport.GotoBottom()
+		if !m.detached {
+			m.viewport.GotoBottom()
+		}
 		cmds := []tea.Cmd{listenForActivityUpdate(m.ctx, m.activityCh)}
 		// The animation is driven by one tick that re-arms itself, so it is
 		// started only when nothing is already driving it.

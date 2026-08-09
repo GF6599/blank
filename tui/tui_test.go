@@ -142,6 +142,62 @@ func TestActivityPanelDrawsTheScrollBarInsideTheFrame(t *testing.T) {
 	}
 }
 
+// The activity panel holds its place while the run keeps arriving.
+// Given a history deeper than the panel and an operator who has scrolled back
+// through it, when more targets arrive, then the view stays on the rows it was
+// left on, and it follows the newest row again once the operator scrolls back
+// down to it.
+// Why it matters: the panel is the only place a failure shows while the run is
+// still going, so a view dragged to the newest row on every event can only be
+// read once the run has finished, which is after the files are gone.
+func TestTheActivityPanelHoldsItsPlaceDuringARun(t *testing.T) {
+	// Given: a history deeper than the panel shows.
+	var cur tea.Model = previewModel(t, 80, 24, 0.5, nil, false)
+	reach := func(i int) {
+		cur, _ = cur.Update(activityMsg{
+			Verb: "Overwriting", Path: fmt.Sprintf("/data/file-%03d.bin", i), Stage: app.StageStart,
+		})
+	}
+	for i := range 40 {
+		reach(i)
+	}
+
+	// And: an operator who has scrolled back through it.
+	press := func(key rune, times int) {
+		for range times {
+			cur, _ = cur.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		}
+	}
+	press('k', 5)
+	const held = "file-030.bin"
+	if !strings.Contains(cur.(model).View(), held) {
+		t.Fatalf("the scroll went past %s, so this test proves nothing:\n%s", held, cur.(model).View())
+	}
+
+	// When: the run reaches ten more targets.
+	for i := 40; i < 50; i++ {
+		reach(i)
+	}
+
+	// Then: the panel still shows what the operator scrolled to.
+	view := cur.(model).View()
+	if !strings.Contains(view, held) {
+		t.Fatalf("the run dragged the panel off %s:\n%s", held, view)
+	}
+	if strings.Contains(view, "file-049.bin") {
+		t.Fatalf("the panel jumped to the newest row:\n%s", view)
+	}
+
+	// When: the operator scrolls back down to the newest row.
+	press('j', 50)
+	reach(50)
+
+	// Then: the panel follows the run again.
+	if view := cur.(model).View(); !strings.Contains(view, "file-050.bin") {
+		t.Fatalf("the panel did not follow again after returning to the newest row:\n%s", view)
+	}
+}
+
 // A settle marks the target it names and leaves the others alone.
 // Given three targets running, when the middle one reports done and the last
 // reports failed, then the first is still running and each of the other two

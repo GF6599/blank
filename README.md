@@ -178,6 +178,10 @@ needs reading. The panel shows as many rows in flight as `--jobs` allows.
 | `b`, `pgup` | Scroll up half a page |
 | `f`, `pgdown` | Scroll down half a page |
 
+The panel follows the newest row until you scroll away from it. It then holds where you
+left it for the rest of the run, and it follows again once you scroll back to the newest
+row.
+
 `ctrl+c` cancels the context. Files already overwritten stay destroyed.
 
 ### Flags
@@ -204,8 +208,6 @@ run before it destroys anything.
 
 These are properties of the current implementation. Each one is reproducible.
 
-- **Scrolling does not hold during a run.** Every new target jumps the panel back to the
-  newest row, so `k` and `j` only stay put once the run has finished.
 - **A target that fails before the walk queues it gets no row.** A directory the walk
   cannot list is counted in the status line and named in the error, but no row in the
   panel carries a `!` for it, because the run never reached it.
