@@ -171,8 +171,8 @@ def build(root: Path, large_mb: int, many: int, depth: int) -> Path:
     make_symlink("missing_target", root / "dangling_link")
 
     # Named pipe (FIFO) and UNIX socket
-    # make_fifo(root / "named_pipe")
-    # make_unix_socket(root / "unix_socket")
+    make_fifo(root / "named_pipe")
+    make_unix_socket(root / "unix_socket")
 
     # Permission edge cases
     # create_text_file(root / "no_read.txt", "no read please\n")

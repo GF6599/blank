@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"blank/internal/testsupport"
@@ -492,5 +493,200 @@ func TestBlankReportsAMissingArgument(t *testing.T) {
 	// And: nothing was reported as progress, because there was no work.
 	if len(res.progress) != 0 {
 		t.Fatalf("expected no progress, got %v", res.progress)
+	}
+}
+
+// shredded reports the paths the run handed to the overwrite.
+func shredded(t *testing.T, logFile string) []string {
+	t.Helper()
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("reading stub log: %v", err)
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if after, ok := strings.CutPrefix(line, "shred "); ok {
+			out = append(out, after)
+		}
+	}
+	return out
+}
+
+// A symlink named on the command line is unlinked, never followed.
+// Given a symlink argument pointing at a file the caller did not name, when the
+// run finishes, then the link is gone and the file it pointed at is untouched.
+// Why it matters: the overwrite follows a symlink, so naming one destroys a file
+// somewhere else on disk and the run still reports success. That is the tool
+// destroying data nobody asked it to destroy.
+func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
+	log := testsupport.SetupStubCommands(t)
+
+	// Given: a symlink to a file the run is not asked to destroy.
+	root := t.TempDir()
+	target := filepath.Join(root, "not-named.txt")
+	payload := []byte("the caller never named this file")
+	if err := os.WriteFile(target, payload, 0o600); err != nil {
+		t.Fatalf("writing the target: %v", err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("creating the symlink: %v", err)
+	}
+
+	// When: the symlink is the argument.
+	res := runBlank(t, link)
+
+	// Then: the file it pointed at still holds its bytes.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("the run destroyed a file it was not given: %v", err)
+	}
+	if !slices.Equal(got, payload) {
+		t.Fatalf("the target was overwritten: got %q, want %q", got, payload)
+	}
+	// And: the overwrite was never pointed at it.
+	if paths := shredded(t, log); len(paths) != 0 {
+		t.Fatalf("the run overwrote %v, expected it to unlink the symlink instead", paths)
+	}
+	// And: the link itself is gone, so the argument was still honoured.
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("expected the symlink to be removed, err=%v", err)
+	}
+	if res.err != nil {
+		t.Fatalf("removing a symlink reported a failure: %v", res.err)
+	}
+}
+
+// A file that cannot be overwritten is removed rather than opened.
+// Given a directory holding a FIFO, when the run finishes, then the FIFO is gone
+// and the overwrite was never pointed at it.
+// Why it matters: the overwrite opens the FIFO and waits for a writer that never
+// arrives, so one named pipe anywhere in the tree stops the whole run for ever.
+func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
+	log := testsupport.SetupStubCommands(t)
+
+	// Given: a tree holding an ordinary file and a FIFO.
+	root := t.TempDir()
+	ordinary := filepath.Join(root, "ordinary.txt")
+	if err := os.WriteFile(ordinary, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the ordinary file: %v", err)
+	}
+	pipe := filepath.Join(root, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatalf("creating the FIFO: %v", err)
+	}
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: the overwrite was pointed at the ordinary file and at nothing else.
+	if got := shredded(t, log); !slices.Equal(got, []string{ordinary}) {
+		t.Fatalf("the overwrite ran on %v, expected only %s", got, ordinary)
+	}
+	// And: the FIFO is gone all the same.
+	if _, err := os.Lstat(pipe); !os.IsNotExist(err) {
+		t.Fatalf("expected the FIFO to be removed, err=%v", err)
+	}
+	if res.err != nil {
+		t.Fatalf("a tree holding a FIFO reported a failure: %v", res.err)
+	}
+}
+
+// A symlink found inside a walked directory is unlinked, never followed.
+// Given a tree holding a symlink out of it, when the run finishes, then the file
+// it pointed at is untouched.
+// Why it matters: enumeration used to remove these as it walked, so moving them
+// into the queue could quietly start following them instead.
+func TestSymlinkInsideATreeLeavesItsTargetIntact(t *testing.T) {
+	log := testsupport.SetupStubCommands(t)
+
+	// Given: a tree whose only symlink points outside it.
+	outside := t.TempDir()
+	target := filepath.Join(outside, "not-named.txt")
+	payload := []byte("outside the tree")
+	if err := os.WriteFile(target, payload, 0o600); err != nil {
+		t.Fatalf("writing the target: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(root, "link")); err != nil {
+		t.Fatalf("creating the symlink: %v", err)
+	}
+
+	// When: the tree is the argument.
+	runBlank(t, root)
+
+	// Then: the file outside the tree still holds its bytes.
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("the run destroyed a file outside the tree: %v", err)
+	}
+	if !slices.Equal(got, payload) {
+		t.Fatalf("the target was overwritten: got %q, want %q", got, payload)
+	}
+	// And: the overwrite was never pointed at anything.
+	if paths := shredded(t, log); len(paths) != 0 {
+		t.Fatalf("the run overwrote %v, expected it to unlink the symlink instead", paths)
+	}
+}
+
+// A removed target is announced like every other one.
+// Given a tree holding a symlink, when the run finishes, then the symlink
+// reports a start and then its outcome, and progress reaches the end.
+// Why it matters: a target the panel never hears about is destroyed with no row
+// and no share of the progress, so the bar reaches 100% having counted fewer
+// targets than the run actually touched.
+func TestRemovedTargetsAreReportedLikeAnyOther(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given: a tree whose only entry is a symlink.
+	root := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "elsewhere"), link); err != nil {
+		t.Fatalf("creating the symlink: %v", err)
+	}
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: the symlink reported a start and then its outcome.
+	if got := stagesFor(res.activity, link); !slices.Equal(got, []Stage{StageStart, StageDone}) {
+		t.Fatalf("the symlink reported %v, expected a start then a done", got)
+	}
+	// And: progress still reaches the end.
+	if len(res.progress) == 0 || res.progress[len(res.progress)-1] != 1 {
+		t.Fatalf("progress ended at %v, expected it to reach 1", res.progress)
+	}
+}
+
+// A removal happens before the directory holding it is reached.
+// Given a tree whose only entry is a symlink, when the run finishes, then the
+// symlink is reported before its parent directory.
+// Why it matters: a directory can only be removed once it is empty, so an order
+// that reached the parent first would have to destroy the entry as a side effect
+// of removing the parent, and could not report it as a target of its own.
+func TestRemovalsRunBeforeTheDirectoryHoldingThem(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given: a tree whose only entry is a symlink.
+	root := t.TempDir()
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "elsewhere"), link); err != nil {
+		t.Fatalf("creating the symlink: %v", err)
+	}
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: the symlink was reached before its parent.
+	linkAt := slices.IndexFunc(res.activity, func(e Event) bool { return e.Path == link })
+	dirAt := slices.IndexFunc(res.activity, func(e Event) bool { return e.Path == root })
+	if linkAt < 0 || dirAt < 0 {
+		t.Fatalf("expected both the symlink and its directory to be reported, got %v", res.activity)
+	}
+	if linkAt > dirAt {
+		t.Fatalf("the directory was reached at %d, before the symlink at %d", dirAt, linkAt)
 	}
 }

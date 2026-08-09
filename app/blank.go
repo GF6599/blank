@@ -19,6 +19,10 @@ import (
 type (
 	file      string
 	directory string
+
+	// removal is a symlink or a special file: a directory entry that holds no
+	// contents of its own, so the run unlinks it rather than overwriting it.
+	removal string
 )
 
 // DefaultJobs is how many targets are overwritten at the same time. The work is
@@ -69,8 +73,9 @@ type Event struct {
 // The wording of an activity row, kept here so the two events for one target
 // cannot describe it differently.
 const (
-	verbFile = "Overwriting"
-	verbDir  = "Deleting directory"
+	verbFile    = "Overwriting"
+	verbDir     = "Deleting directory"
+	verbRemoval = "Removing"
 )
 
 // Failure names one target the run did not destroy.
@@ -152,15 +157,15 @@ func (f *failures) err() error {
 	return &IncompleteRun{Failures: slices.Clone(f.list)}
 }
 
-// work groups files and directories queued for secure deletion.
+// work holds one bucket per way of destroying a target.
 type work struct {
 	files       []file
+	removals    []removal
 	directories []directory
 }
 
-// len returns the total count of files and directories in the work queue.
 func (w *work) len() int {
-	return len(w.files) + len(w.directories)
+	return len(w.files) + len(w.removals) + len(w.directories)
 }
 
 type kind int
@@ -169,6 +174,9 @@ const (
 	kindFile kind = iota
 	kindDir
 	kindSymlink
+	// kindSpecial is a FIFO, a socket, or a device node. The overwrite opens
+	// its target, and opening one of these blocks until a peer arrives.
+	kindSpecial
 )
 
 // classify reads the path once. The walk needs both answers for every entry,
@@ -183,8 +191,10 @@ func classify(path string) (kind, error) {
 		return kindSymlink, nil
 	case fi.IsDir():
 		return kindDir, nil
-	default:
+	case fi.Mode().IsRegular():
 		return kindFile, nil
+	default:
+		return kindSpecial, nil
 	}
 }
 
@@ -216,11 +226,14 @@ func Blank(ctx context.Context, args []string, jobs int, progress chan<- float64
 			fails.add(absolutePath, fmt.Errorf("read path: %w", err))
 			continue
 		}
-		if k == kindDir {
+		switch k {
+		case kindDir:
 			walk(w, fails, absolutePath)
-			continue
+		case kindSymlink, kindSpecial:
+			w.removals = append(w.removals, removal(absolutePath))
+		default:
+			w.files = append(w.files, file(absolutePath))
 		}
-		w.files = append(w.files, file(absolutePath))
 	}
 	if w.len() == 0 {
 		slog.Info("No files or directories to shred")
@@ -236,6 +249,15 @@ func Blank(ctx context.Context, args []string, jobs int, progress chan<- float64
 		return err
 	}
 	slog.Info("blank finished. All files and directories deleted.")
+	return nil
+}
+
+// os.Remove never follows a symlink to the file it names, and it never opens
+// the entry, so a FIFO with no writer cannot stall the run.
+func removeEntry(r removal) error {
+	if err := os.Remove(string(r)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove: %w", err)
+	}
 	return nil
 }
 
@@ -354,6 +376,16 @@ feed:
 	close(queue)
 	wg.Wait()
 
+	// Removals run before the directories that hold them, because a directory
+	// is only removable once it is empty.
+	for _, r := range w.removals {
+		if err := ctx.Err(); err != nil {
+			break
+		}
+		runTarget(verbRemoval, string(r), func() error { return removeEntry(r) })
+		update()
+	}
+
 	// Now delete directories (sequentially) and update progress after each
 	for _, dir := range w.directories {
 		if err := ctx.Err(); err != nil {
@@ -382,12 +414,8 @@ func walk(w *work, fails *failures, dir string) {
 			continue
 		}
 		switch k {
-		case kindSymlink:
-			// os.Remove unlinks the link and never follows it to the target.
-			// Unlike rm -rf it also reports a removal that failed.
-			if err := os.Remove(fp); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				fails.add(fp, fmt.Errorf("remove symlink: %w", err))
-			}
+		case kindSymlink, kindSpecial:
+			w.removals = append(w.removals, removal(fp))
 		case kindDir:
 			walk(w, fails, fp)
 		default:
