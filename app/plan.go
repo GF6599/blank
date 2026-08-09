@@ -60,15 +60,14 @@ func (p Plan) Targets() []Target {
 // the filesystem and changes nothing, which is what lets the caller report the
 // plan, or ask about it, before any of it happens.
 func Enumerate(args []string) (Plan, error) {
-	var plan Plan
-	fails := &failures{}
+	e := &enumeration{fails: &failures{}, seen: map[string]bool{}}
 	// Every argument is guarded before any of them is expanded, so a command
 	// line holding one protected path plans nothing at all.
 	targets := make([]string, 0, len(args))
 	for _, arg := range args {
 		absolutePath, err := filepath.Abs(arg)
 		if err != nil {
-			fails.add(arg, fmt.Errorf("resolve path: %w", err))
+			e.fails.add(arg, fmt.Errorf("resolve path: %w", err))
 			continue
 		}
 		if err := guard(absolutePath); err != nil {
@@ -79,44 +78,58 @@ func Enumerate(args []string) (Plan, error) {
 	for _, target := range targets {
 		k, err := classify(target)
 		if err != nil {
-			fails.add(target, fmt.Errorf("read path: %w", err))
+			e.fails.add(target, fmt.Errorf("read path: %w", err))
 			continue
 		}
-		plan.add(fails, k, target)
+		e.add(k, target)
 	}
-	plan.Failures = fails.list
-	return plan, nil
+	e.plan.Failures = e.fails.list
+	return e.plan, nil
 }
 
-func (p *Plan) add(fails *failures, k kind, path string) {
+// Arguments overlap whenever a glob expands beside the directory holding it.
+// The second copy of a file is overwritten after the first has unlinked it,
+// which reports a survivor over a file that is gone, so seen keeps one target
+// out of the plan twice.
+type enumeration struct {
+	plan  Plan
+	fails *failures
+	seen  map[string]bool
+}
+
+func (e *enumeration) add(k kind, path string) {
+	if e.seen[path] {
+		return
+	}
+	e.seen[path] = true
 	switch k {
 	case kindDir:
-		walk(p, fails, path)
+		e.walk(path)
 	case kindSymlink, kindSpecial:
-		p.Removals = append(p.Removals, path)
+		e.plan.Removals = append(e.plan.Removals, path)
 	default:
-		p.Files = append(p.Files, path)
+		e.plan.Files = append(e.plan.Files, path)
 	}
 }
 
 // walk collects the tree under dir. A directory it cannot read is recorded
 // rather than skipped, because os.ReadDir failing looks exactly like an empty
 // directory and the files inside would otherwise never be queued.
-func walk(plan *Plan, fails *failures, dir string) {
-	plan.Directories = append(plan.Directories, dir)
+func (e *enumeration) walk(dir string) {
+	e.plan.Directories = append(e.plan.Directories, dir)
 	entries, err := readDir(dir)
 	if err != nil {
-		fails.add(dir, fmt.Errorf("read directory: %w", err))
+		e.fails.add(dir, fmt.Errorf("read directory: %w", err))
 		return
 	}
-	for _, e := range entries {
-		fp := filepath.Join(dir, e.Name())
+	for _, entry := range entries {
+		fp := filepath.Join(dir, entry.Name())
 		k, err := classify(fp)
 		if err != nil {
-			fails.add(fp, fmt.Errorf("read path: %w", err))
+			e.fails.add(fp, fmt.Errorf("read path: %w", err))
 			continue
 		}
-		plan.add(fails, k, fp)
+		e.add(k, fp)
 	}
 }
 

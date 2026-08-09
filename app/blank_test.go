@@ -325,6 +325,38 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
+// Arguments that overlap destroy the tree once and report nothing survived.
+// Given a directory and a file inside it named together, when the run finishes,
+// then the tree is gone and no target is reported as surviving.
+// Why it matters: the second copy of a file is overwritten after the first has
+// already unlinked it, so the run names a survivor over a file it destroyed.
+// The exit code is the only signal this tool has, and a false one teaches the
+// operator to ignore it.
+func TestOverlappingArgumentsReportNoSurvivor(t *testing.T) {
+	// Given: a tree, named alongside a file inside it and alongside itself.
+	root := t.TempDir()
+	inside := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(inside, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", inside, err)
+	}
+
+	// When: the run finishes.
+	res := runBlank(t, root, inside, root)
+
+	// Then: it reports no survivor.
+	if res.err != nil {
+		t.Fatalf("overlapping arguments reported a survivor: %v", res.err)
+	}
+	// And: the tree is gone.
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("expected the tree to be gone, err=%v", err)
+	}
+	// And: the file was reached once, so two workers never covered one inode.
+	if got := stagesFor(res.activity, inside); !slices.Equal(got, []Stage{StageStart, StageDone}) {
+		t.Fatalf("the file reported %v, expected one start and one done", got)
+	}
+}
+
 // A directory the walk cannot read is reported, not skipped in silence.
 // Given a directory with no read permission, when the run finishes, then it
 // returns an error naming that directory and the files inside are still there.
