@@ -21,15 +21,22 @@ graph TD
     C -->|on| E[stdout printer]
     D --> F[app: deletion engine]
     E --> F
-    F --> G["shred -uzfn 10, once per file"]
+    F --> G["overwrite in place, once per file"]
     F --> I["os.Remove, once per symlink or special file"]
-    F --> H["rm -rf, once per directory"]
+    F --> H["os.Remove, deepest directory first"]
     F -. progress and activity .-> D
     F -. progress and activity .-> E
 ```
 
-Each file gets 10 random overwrite passes plus a final zero pass, which is what
-`shred -uzfn 10` performs. `--jobs` sets how many run at the same time.
+Each file is opened and written over in place: `--passes` random covers, 10 by default,
+then one zero cover, with a flush to the device after each. The name is then replaced with
+a meaningless one of the same length before the entry is unlinked, because a directory
+entry carries the filename long after the contents are gone. `--jobs` sets how many files
+are worked on at the same time.
+
+Directories are removed deepest first, one at a time, and a directory that still holds
+anything is reported rather than emptied. That is what stops a file whose overwrite failed
+from being unlinked with its contents intact.
 
 A symlink and a special file hold no contents of their own, so `blank` unlinks them rather
 than overwriting them. A symlink is never followed, so naming one destroys the link and
@@ -38,17 +45,20 @@ leaves the file it points at alone.
 ## What happens when a target survives
 
 `blank` exits non-zero and names every target it did not destroy, on stderr, in both
-modes. A target survives when the walk cannot list a directory, when the overwrite exits
-non-zero, or when the directory removal fails.
+modes. A target survives when the walk cannot list a directory, when the overwrite fails,
+or when a directory is still not empty by the time the run reaches it.
 
 ```console
 $ blk ./tree
 Error: 2 targets survived the run
   /home/dev/tree/locked: read directory: open /home/dev/tree/locked: permission denied
-  /home/dev/tree: rm -rf failed: exit status 1 (output: rm: /home/dev/tree: Directory not empty)
+  /home/dev/tree: remove directory: remove /home/dev/tree: directory not empty
 $ echo $?
 1
 ```
+
+A target that survives keeps its directory. The removal refuses a directory that still
+holds something, so the file stays where the caller can find it.
 
 The status line under the progress bar reports the same verdict, so the interface and the
 exit code cannot disagree.
@@ -65,18 +75,13 @@ than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
 
 ## Requirements
 
-| Dependency | Why | Note |
-| --- | --- | --- |
-| Go 1.24.2 or later | To build the binary. | |
-| GNU `shred` on `PATH` | The engine runs it once per file. | macOS does not supply it. Run `brew install coreutils`, which puts `shred` on `PATH` under its own name. |
-| `rm` on `PATH` | The engine runs it once per directory. | Standard on Linux and macOS. |
+| Dependency | Why |
+| --- | --- |
+| Go 1.24.2 or later | To build the binary. |
 
-On macOS you do not need the `gnubin` directory that `brew info coreutils` describes.
-Homebrew adds the `g` prefix only to commands macOS already provides, and macOS has no
-`shred`, so you get both `shred` and `gshred`.
-
-Windows has neither program, so there is no Windows release. A Windows build would start
-and then fail on every file.
+Nothing else. The overwrite and every removal are Go standard library calls, so `blank`
+runs with an empty `PATH` and needs no coreutils. It cross compiles for Windows, which no
+release has been tested on.
 
 ## Install
 
@@ -130,6 +135,7 @@ needs reading. The panel shows as many rows in flight as `--jobs` allows.
 | Flag | Effect |
 | --- | --- |
 | `--jobs` | Targets to overwrite at the same time. Default 16. Below 1 is refused. |
+| `--passes` | Random covers over each file before the zero cover. Default 10. Below 0 is refused. |
 | `--log` | Write logs to `blank.log` in the working directory. Off by default. |
 | `--no-ui` | Hidden. Turn off the terminal interface and print progress to stdout. |
 
@@ -151,6 +157,11 @@ These are properties of the current implementation. Each one is reproducible.
   panel carries a `!` for it, because the run never reached it.
 - **A hardlink is overwritten like any other file.** A hardlink is the file rather than a
   pointer to it, so destroying one destroys the contents every other link shares.
+- **Writing over a file does not always reach the bytes it held.** An SSD remaps blocks as
+  it writes, and a copy-on-write filesystem such as APFS, Btrfs or ZFS may place the new
+  data somewhere else and leave the old blocks intact. A snapshot, a journal, or a backup
+  keeps its own copy either way. This limit is the storage layer's, not the tool's, and no
+  number of passes removes it. Full disk encryption is the answer that does.
 - **There is no confirmation prompt and no dry run.** The program starts destroying as
   soon as it parses the arguments, and it refuses no path.
 
@@ -182,6 +193,7 @@ just e2e      # generate a dummy tree and delete it headlessly
 ├── main.go                 # Entry point. Calls cmd.Execute.
 ├── cmd/root.go             # Cobra root command: flags, logging, mode choice.
 ├── app/blank.go            # Walks the arguments and runs the deletion.
+├── app/overwrite.go        # Destroys one file: the covers, the rename, the unlink.
 ├── tui/tui.go              # Bubble Tea model: state, sizing, layout.
 ├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
 ├── utils/gen-dummy-df.py   # Generates a dummy tree for `just e2e`.
