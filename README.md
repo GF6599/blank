@@ -218,11 +218,12 @@ These are properties of the current implementation. Each one is reproducible.
   data somewhere else and leave the old blocks intact. A snapshot, a journal, or a backup
   keeps its own copy either way. This limit is the storage layer's, not the tool's, and no
   number of passes removes it. Full disk encryption is the answer that does.
-- **The protected path guard compares names, not devices.** It reads the path you typed
-  against a list and against your home directory. It does not resolve mount points, so a
-  directory inside your home that is a bind mount of a system path is walked like any
-  other directory. The guard catches a mistyped argument, which is what it is for. It is
-  not a barrier against someone determined to destroy their own machine.
+- **The protected path guard resolves symlinks, but not mount points.** It reads the path
+  you typed, and the same path with every symlink above the last component resolved,
+  against a list and against your home directory. A bind mount of a system path inside
+  your home is a second name the resolution cannot see, so it is walked like any other
+  directory. The guard catches a mistyped argument, which is what it is for. It is not a
+  barrier against someone determined to destroy their own machine.
 
 ## Development
 

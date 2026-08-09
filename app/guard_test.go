@@ -102,6 +102,67 @@ func TestTheHomeGuardDoesNotDependOnTheEnvironment(t *testing.T) {
 	}
 }
 
+// A protected directory is refused under every name that reaches it.
+// Given a symlink to the directory holding home, when a path through that
+// symlink names home, then the run refuses it.
+// Why it matters: a machine whose /home is a symlink has two names for the same
+// directory, and a guard that compares strings protects only the one it was
+// told about. Typing the other one destroys home with no refusal at all.
+func TestAProtectedPathIsRefusedThroughASymlink(t *testing.T) {
+	// Given: a home directory only the user database knows about.
+	home := t.TempDir()
+	currentUser = func() (*user.User, error) { return &user.User{HomeDir: home}, nil }
+	t.Cleanup(func() { currentUser = user.Current })
+
+	// And: a second name for the directory holding it.
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(filepath.Dir(home), alias); err != nil {
+		t.Fatalf("creating the alias: %v", err)
+	}
+
+	// When: home is named through the alias.
+	aliased := filepath.Join(alias, filepath.Base(home))
+	plan, err := Enumerate([]string{aliased})
+
+	// Then: the run refuses it and plans nothing.
+	if err == nil {
+		t.Fatalf("%s reaches the home directory and was accepted", aliased)
+	}
+	if plan.Total() != 0 {
+		t.Fatalf("a refused run planned %d targets", plan.Total())
+	}
+}
+
+// A symlink to a protected path is removed rather than refused.
+// Given a symlink pointing at the home directory, when it is named, then the
+// run plans to unlink it.
+// Why it matters: resolving the last component too would refuse every link that
+// points somewhere protected, and unlinking one destroys nothing but the link.
+func TestASymlinkToAProtectedPathIsStillRemovable(t *testing.T) {
+	// Given: a home directory, and a symlink pointing straight at it.
+	home := t.TempDir()
+	currentUser = func() (*user.User, error) { return &user.User{HomeDir: home}, nil }
+	t.Cleanup(func() { currentUser = user.Current })
+	link := filepath.Join(t.TempDir(), "link-to-home")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatalf("creating the link: %v", err)
+	}
+
+	// When: the link is named.
+	plan, err := Enumerate([]string{link})
+
+	// Then: it is planned as a removal, and nothing else is.
+	if err != nil {
+		t.Fatalf("a symlink pointing at home was refused: %v", err)
+	}
+	if !slices.Equal(plan.Removals, []string{link}) {
+		t.Fatalf("the plan removes %v, expected only %s", plan.Removals, link)
+	}
+	if len(plan.Files)+len(plan.Directories) != 0 {
+		t.Fatalf("the plan followed the link: files %v, directories %v", plan.Files, plan.Directories)
+	}
+}
+
 // A path inside the home directory is an ordinary target.
 // Given a project directory under home, when it is enumerated, then it is
 // accepted and the file inside it is planned.
