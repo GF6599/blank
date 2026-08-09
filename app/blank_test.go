@@ -103,6 +103,103 @@ func runBlankWith(t *testing.T, opts Options, args ...string) result {
 	return res
 }
 
+// One worker keeps the stop reproducible: the file in flight settles, and
+// everything behind it is still queued.
+func runBlankCancelling(t *testing.T, args ...string) result {
+	t.Helper()
+	plan, err := Enumerate(args)
+	if err != nil {
+		t.Fatalf("enumerating %v: %v", args, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	progressCh := make(chan float64)
+	activityCh := make(chan Event)
+
+	var res result
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for p := range progressCh {
+			res.progress = append(res.progress, p)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		stopped := false
+		for msg := range activityCh {
+			res.activity = append(res.activity, msg)
+			if !stopped && msg.Stage == StageDone {
+				stopped = true
+				cancel()
+			}
+		}
+	}()
+
+	res.err = Blank(ctx, plan, Options{Jobs: 1, Passes: 1}, progressCh, activityCh)
+	wg.Wait()
+	return res
+}
+
+func remaining(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, path)
+		return nil
+	}); err != nil {
+		t.Fatalf("reading what is left of %s: %v", root, err)
+	}
+	return out
+}
+
+// A run stopped partway through names every target it did not destroy.
+// Given a run cancelled after its first target settles, when it returns, then
+// the error names each entry still on disk.
+// Why it matters: the exit code is the only thing a script reads. A cancelled
+// run that returns nil says the tree is gone while it still holds plaintext, and
+// the log says the same.
+func TestACancelledRunNamesWhatItDidNotDestroy(t *testing.T) {
+	// Given: a tree of files, only one of which the run gets through.
+	root := t.TempDir()
+	for i := range 30 {
+		p := filepath.Join(root, fmt.Sprintf("file-%02d.txt", i))
+		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+
+	// When: the run is cancelled at the first settle.
+	res := runBlankCancelling(t, root)
+
+	// Then: it reports a failure rather than a clean sweep.
+	if res.err == nil {
+		t.Fatal("a cancelled run reported success, so the exit code reads as destroyed")
+	}
+	// And: every entry still on disk is named, the directory included.
+	var incomplete *IncompleteRun
+	if !errors.As(res.err, &incomplete) {
+		t.Fatalf("expected a survivor list, got %v", res.err)
+	}
+	named := make(map[string]bool, len(incomplete.Failures))
+	for _, f := range incomplete.Failures {
+		named[f.Path] = true
+	}
+	left := remaining(t, root)
+	if len(left) < 2 {
+		t.Fatalf("the run destroyed the whole tree before the cancel landed, %d entries left", len(left))
+	}
+	for _, path := range left {
+		if !named[path] {
+			t.Fatalf("%s is still on disk and the run did not name it: %v", path, res.err)
+		}
+	}
+}
+
 // The pool never runs more targets at once than it was told to.
 // Given more files than the limit allows, when the run finishes, then the number
 // of targets in flight never passed the limit.

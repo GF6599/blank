@@ -213,6 +213,14 @@ func removeDir(path string) error {
 	return nil
 }
 
+// A stop is not a success: everything behind it is still on disk, and the
+// caller reads the exit code rather than the interface.
+func recordSkipped(fails *failures, paths []string, err error) {
+	for _, path := range paths {
+		fails.add(path, err)
+	}
+}
+
 // concurrentShred fans work out to a fixed pool of workers, and emits live
 // progress plus optional activity updates.
 func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failures, progress chan<- float64, activity chan<- Event) {
@@ -281,8 +289,9 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 		go func() {
 			defer wg.Done()
 			for f := range queue {
-				if ctx.Err() != nil {
-					return
+				if err := ctx.Err(); err != nil {
+					fails.add(f, err)
+					continue
 				}
 				runTarget(verbFile, f, func() error {
 					return overwriteFile(ctx, f, opts.Passes)
@@ -293,9 +302,10 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 	}
 
 feed:
-	for _, f := range plan.Files {
+	for i, f := range plan.Files {
 		select {
 		case <-ctx.Done():
+			recordSkipped(fails, plan.Files[i:], ctx.Err())
 			break feed
 		case queue <- f:
 		}
@@ -305,8 +315,9 @@ feed:
 
 	// Removals run before the directories that hold them, because a directory
 	// is only removable once it is empty.
-	for _, r := range plan.Removals {
+	for i, r := range plan.Removals {
 		if err := ctx.Err(); err != nil {
+			recordSkipped(fails, plan.Removals[i:], err)
 			break
 		}
 		runTarget(verbRemoval, r, func() error { return removeEntry(r) })
@@ -316,8 +327,11 @@ feed:
 	// Deepest first. walk appends a directory before the entries inside it, so
 	// reading its output backwards always reaches a child before its parent,
 	// which is the order os.Remove needs.
-	for _, dir := range slices.Backward(plan.Directories) {
+	deepestFirst := slices.Clone(plan.Directories)
+	slices.Reverse(deepestFirst)
+	for i, dir := range deepestFirst {
 		if err := ctx.Err(); err != nil {
+			recordSkipped(fails, deepestFirst[i:], err)
 			break
 		}
 		runTarget(verbDir, dir, func() error { return removeDir(dir) })
