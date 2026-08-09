@@ -317,13 +317,72 @@ func TestViewStaysCompactWhateverTheTerminalHeight(t *testing.T) {
 }
 
 // User-facing chrome carries no em dash.
-// Given a completed run, when the status line renders, then it uses no em dash.
+// Given every outcome a run can reach, when the status line renders, then it
+// uses no em dash.
 // Why it matters: the house mechanics forbid it, and chrome is the copy most
 // likely to be written once and never reread.
 func TestStatusLineUsesNoEmDash(t *testing.T) {
-	for _, done := range []bool{false, true} {
-		if got := statusLine(done); strings.ContainsRune(got, '—') {
-			t.Fatalf("em dash in status line (done=%v): %q", done, got)
+	for _, o := range allOutcomes() {
+		if got := statusLine(o, 2); strings.ContainsRune(got, '—') {
+			t.Fatalf("em dash in status line (outcome %d): %q", o, got)
 		}
 	}
+}
+
+// Only a run the engine cleared reads as a success.
+// Given each outcome in turn, when the status line renders, then the word
+// "complete" appears for the clean run and for no other.
+// Why it matters: progress counts targets attempted rather than targets
+// destroyed, so the one line an operator reads at the end must be built from
+// the engine's verdict and not from the bar reaching the right-hand edge.
+func TestOnlyAClearedRunReadsAsComplete(t *testing.T) {
+	if got := statusLine(runComplete, 0); !strings.Contains(got, "complete") {
+		t.Fatalf("a cleared run does not read as complete: %q", got)
+	}
+	for _, o := range allOutcomes() {
+		if o == runComplete {
+			continue
+		}
+		if got := statusLine(o, 2); strings.Contains(got, "complete") {
+			t.Fatalf("outcome %d claims completion: %q", o, got)
+		}
+	}
+}
+
+// The failed line names how many targets are still on disk.
+// Given one survivor and then two, when the status line renders, then it counts
+// them and agrees with itself on the noun.
+// Why it matters: the operator decides whether to look at the error list from
+// this line, and "1 targets" reads as a defect in the tool rather than a count.
+func TestFailedStatusLineCountsTheSurvivors(t *testing.T) {
+	for _, tc := range []struct {
+		survivors int
+		want      string
+	}{
+		{1, "1 target survived"},
+		{2, "2 targets survived"},
+	} {
+		if got := statusLine(runFailed, tc.survivors); !strings.Contains(got, tc.want) {
+			t.Fatalf("status line for %d survivors is %q, expected it to contain %q", tc.survivors, got, tc.want)
+		}
+	}
+}
+
+// A failure that carries no list still refuses to read as a success.
+// Given an outcome of failed with nothing to count, when the status line
+// renders, then it says the run failed and names no number.
+// Why it matters: the engine refuses a bad --jobs value with a plain error, so
+// the count is not the only shape a failure arrives in.
+func TestFailedStatusLineSurvivesAnUncountableFailure(t *testing.T) {
+	got := statusLine(runFailed, 0)
+	if !strings.Contains(got, "failed") {
+		t.Fatalf("an uncountable failure does not read as failed: %q", got)
+	}
+	if strings.ContainsAny(got, "0123456789") {
+		t.Fatalf("an uncountable failure invented a count: %q", got)
+	}
+}
+
+func allOutcomes() []runOutcome {
+	return []runOutcome{runActive, runComplete, runCancelled, runFailed}
 }

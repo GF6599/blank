@@ -32,6 +32,7 @@ func previewModel(t *testing.T, w, h int, pct float64, rows []activityRow, done 
 		rows:     rows,
 	}
 	m.completed = done
+	m.engineSettled = done
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = updated.(model)
 	m.progress.SetPercent(pct)

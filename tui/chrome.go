@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -241,9 +242,45 @@ func clampHead(s string, width int) string {
 	return ansi.Truncate(s, width, "")
 }
 
-func statusLine(done bool) string {
-	if done {
+// runOutcome is how far the run got, as the engine reported it.
+type runOutcome int
+
+const (
+	runActive runOutcome = iota
+	runComplete
+	runCancelled
+	runFailed
+)
+
+// statusLine reads "complete" for runComplete alone, so this line and the exit
+// code are built from the same verdict and cannot disagree. A failure with
+// nothing to count still says so, because an engine error that carries no list
+// is still an engine error.
+func statusLine(o runOutcome, survivors int) string {
+	switch o {
+	case runComplete:
 		return "blanking complete"
+	case runCancelled:
+		return "blanking cancelled"
+	case runFailed:
+		if survivors < 1 {
+			return "blanking failed"
+		}
+		noun := "targets"
+		if survivors == 1 {
+			noun = "target"
+		}
+		return fmt.Sprintf("blanking failed, %d %s survived", survivors, noun)
+	default:
+		return "blanking"
 	}
-	return "blanking"
+}
+
+// The survivor count is the one line an operator must not skim past, so it
+// carries the colour the `!` marks already use.
+func statusStyleFor(o runOutcome) lipgloss.Style {
+	if o == runFailed {
+		return failedStyle
+	}
+	return statusStyle
 }

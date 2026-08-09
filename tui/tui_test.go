@@ -1,9 +1,13 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -292,4 +296,123 @@ func barColumn(t *testing.T, m model) []rune {
 		t.Fatal("found no panel rows in the view")
 	}
 	return col
+}
+
+// The status line never claims success on a run that left plaintext on disk.
+// Given a run whose progress reached the end, when the engine reports that two
+// targets survived, then the line counts them and never reads "complete".
+// Why it matters: progress counts targets attempted rather than targets
+// destroyed, so a run that fills the bar and still leaves a readable file behind
+// would otherwise announce itself as a success.
+func TestStatusLineNeverClaimsSuccessWhenATargetSurvived(t *testing.T) {
+	// Given: a run whose progress has reached the end.
+	var cur tea.Model = previewModel(t, 80, 24, 1, nil, true)
+
+	// When: the engine reports two survivors.
+	cur, _ = cur.Update(engineDoneMsg{err: &app.IncompleteRun{Failures: []app.Failure{
+		{Path: "/data/locked.txt", Err: errors.New("permission denied")},
+		{Path: "/data/held.bin", Err: errors.New("permission denied")},
+	}}})
+	got := cur.(model).View()
+
+	// Then: the line names how many are still there.
+	if !strings.Contains(got, "2 targets survived") {
+		t.Fatalf("the status line does not name the survivors:\n%s", got)
+	}
+	// And: it does not read as a success.
+	if strings.Contains(got, "complete") {
+		t.Fatalf("the status line still claims completion:\n%s", got)
+	}
+}
+
+// A run that stopped early says so rather than reading as still working.
+// Given a run partway through, when the engine stops with nothing to report,
+// then the status line says the run was cancelled.
+// Why it matters: the interface stays on screen after the engine stops, so a
+// line that still reads "blanking" leaves an abandoned run looking like a
+// running one.
+func TestStatusLineReportsACancelledRun(t *testing.T) {
+	// Given: a run partway through.
+	var cur tea.Model = previewModel(t, 80, 24, 0.4, nil, false)
+
+	// When: the engine stops without an error.
+	cur, _ = cur.Update(engineDoneMsg{})
+
+	// Then: the line reports the stop.
+	if got := cur.(model).View(); !strings.Contains(got, "cancelled") {
+		t.Fatalf("the status line does not report the stop:\n%s", got)
+	}
+}
+
+// The engine's outcome reaches both of the things that need it.
+// Given a run that ends in an error, when the outcome is delivered, then the
+// interface's listener and the channel UIStart waits on both receive it.
+// Why it matters: UIStart receives after the program has returned and a pending
+// command can outlive the program, so a single shared channel would let
+// whichever receiver won leave the other blocked forever.
+func TestEngineOutcomeReachesBothReaders(t *testing.T) {
+	// Given: a target that cannot be read, so the run ends in an error.
+	absent := filepath.Join(t.TempDir(), "absent")
+	engine := make(chan error, 1)
+	done := make(chan error, 1)
+
+	// When: the run is started and allowed to finish.
+	startBlankCmd(context.Background(), []string{absent}, 1,
+		make(chan float64), make(chan app.Event), done, engine)()
+
+	// Then: the interface learns the run ended, and so does UIStart.
+	for name, ch := range map[string]chan error{"the interface": engine, "UIStart": done} {
+		select {
+		case err := <-ch:
+			if err == nil {
+				t.Fatalf("%s received no error, so the exit code would read as success", name)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never received the outcome and would block forever", name)
+		}
+	}
+}
+
+// Quitting a run partway through says so on the way out.
+// Given a run still working, when the operator presses q, then the frame the
+// program leaves behind reports the run as cancelled.
+// Why it matters: quitting returns tea.Quit at once, so the engine's own
+// outcome never reaches the model, and the last thing left in the scrollback
+// would otherwise read as a run still in progress.
+func TestQuittingMidRunLeavesACancelledFrame(t *testing.T) {
+	// Given: a run partway through.
+	var cur tea.Model = previewModel(t, 80, 24, 0.4, demoRows("Overwriting /data/one.bin"), false)
+
+	// When: the operator quits.
+	cur, cmd := cur.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+
+	// Then: the program is on its way out.
+	if cmd == nil {
+		t.Fatal("q did not quit")
+	}
+	// And: the frame it leaves behind reports the run as cancelled.
+	if got := cur.(model).View(); !strings.Contains(got, "cancelled") {
+		t.Fatalf("the frame left behind does not report the run as cancelled:\n%s", got)
+	}
+}
+
+// Quitting a finished run does not retract the result.
+// Given a clean run the engine has already cleared, when the operator presses q
+// to dismiss the interface, then the frame still reads as complete.
+// Why it matters: q is how every run is dismissed, not only an abandoned one,
+// so a quit that reported itself as a cancellation would mislabel the ordinary
+// path out of the program.
+func TestQuittingAFinishedRunStillReadsComplete(t *testing.T) {
+	// Given: a clean run the engine has cleared.
+	var cur tea.Model = previewModel(t, 80, 24, 1, nil, true)
+	cur, _ = cur.Update(engineDoneMsg{})
+
+	// When: the operator dismisses the interface.
+	cur, _ = cur.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+
+	// Then: the frame still reports the run as complete.
+	got := cur.(model).View()
+	if !strings.Contains(got, "blanking complete") {
+		t.Fatalf("dismissing a finished run retracted the result:\n%s", got)
+	}
 }

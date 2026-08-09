@@ -4,6 +4,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -45,6 +46,10 @@ type (
 	gsCompleteMsg struct{}
 	progressMsg   float64
 	activityMsg   app.Event
+
+	// engineDoneMsg carries the value the exit code is built from, so the
+	// interface reports the run from the same verdict the caller receives.
+	engineDoneMsg struct{ err error }
 )
 
 // activityRow is one target's line in the panel. path is what a settle event
@@ -56,21 +61,25 @@ type activityRow struct {
 }
 
 type model struct {
-	progress     progress.Model
-	viewport     viewport.Model
-	spinner      spinner.Model
-	ctx          context.Context
-	cancel       context.CancelFunc
-	args         []string
-	jobs         int
-	progressCh   chan float64
-	activityCh   chan app.Event
-	done         chan error
-	completed    bool
-	ticking      bool
-	rows         []activityRow
-	contentWidth int
-	termHeight   int
+	progress      progress.Model
+	viewport      viewport.Model
+	spinner       spinner.Model
+	ctx           context.Context
+	cancel        context.CancelFunc
+	args          []string
+	jobs          int
+	progressCh    chan float64
+	activityCh    chan app.Event
+	done          chan error
+	engineCh      chan error
+	engineErr     error
+	engineSettled bool
+	aborted       bool
+	completed     bool
+	ticking       bool
+	rows          []activityRow
+	contentWidth  int
+	termHeight    int
 }
 
 var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
@@ -97,6 +106,7 @@ func UIStart(args []string, jobs int) error {
 		progressCh: make(chan float64),
 		activityCh: make(chan app.Event),
 		done:       make(chan error, 1),
+		engineCh:   make(chan error, 1),
 		rows:       make([]activityRow, 0, 16),
 	}
 	defer cancel()
@@ -115,9 +125,10 @@ func UIStart(args []string, jobs int) error {
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startBlankCmd(m.ctx, m.args, m.jobs, m.progressCh, m.activityCh, m.done),
+		startBlankCmd(m.ctx, m.args, m.jobs, m.progressCh, m.activityCh, m.done, m.engineCh),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
+		listenForEngine(m.engineCh),
 	)
 }
 
@@ -127,6 +138,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
+			// Quitting stops the message loop, so the engine's outcome never
+			// arrives. Bubble Tea renders the model returned here one last
+			// time, which is the only chance to say the run was stopped.
+			m.aborted = true
 			m.cancel()
 			return m, tea.Quit
 		case "up", "k":
@@ -153,6 +168,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.viewport.Height = max(min(activityRows, msg.Height-chromeRows-m.markLines()), 3)
 		m.viewport.SetContent(m.activityView())
+		return m, nil
+
+	case engineDoneMsg:
+		m.engineErr = msg.err
+		m.engineSettled = true
 		return m, nil
 
 	case gsCompleteMsg:
@@ -239,6 +259,32 @@ func (m *model) note(e app.Event) {
 	}
 }
 
+// outcome reads the engine's own error rather than counting the rows that carry
+// a failed mark. The history is capped, and a target that fails during
+// enumeration is never queued and so never reaches a row at all, so the panel
+// knows a subset of what survived and the engine knows all of it.
+func (m model) outcome() (runOutcome, int) {
+	switch {
+	case m.engineErr != nil:
+		var incomplete *app.IncompleteRun
+		if errors.As(m.engineErr, &incomplete) {
+			return runFailed, len(incomplete.Failures)
+		}
+		return runFailed, 0
+	case m.engineSettled && m.completed:
+		return runComplete, 0
+	case m.engineSettled:
+		return runCancelled, 0
+	// The operator stopped a run the engine has not reported on yet. Quitting
+	// is also how a finished run is dismissed, so this is read after the
+	// verdict rather than before it.
+	case m.aborted:
+		return runCancelled, 0
+	default:
+		return runActive, 0
+	}
+}
+
 func (m model) running() bool {
 	return slices.ContainsFunc(m.rows, func(r activityRow) bool { return r.stage == app.StageStart })
 }
@@ -300,8 +346,9 @@ func (m model) View() string {
 	}
 	b.WriteString("\n")
 
+	outcome, survivors := m.outcome()
 	b.WriteString(pad)
-	b.WriteString(statusStyle.Render(clampHead(statusLine(m.completed), m.contentWidth)))
+	b.WriteString(statusStyleFor(outcome).Render(clampHead(statusLine(outcome, survivors), m.contentWidth)))
 	b.WriteString("\n\n")
 
 	b.WriteString(pad)
@@ -311,10 +358,28 @@ func (m model) View() string {
 	return b.String()
 }
 
-func startBlankCmd(ctx context.Context, args []string, jobs int, progress chan<- float64, activity chan<- app.Event, done chan<- error) tea.Cmd {
+// The outcome goes to two receivers that cannot share one channel. UIStart
+// receives after the program has returned, and a command started before the
+// quit can outlive it, so whichever receiver won a shared channel would leave
+// the other blocked on an empty one. Both of these are buffered, so neither
+// send waits for a reader that may never come.
+func startBlankCmd(ctx context.Context, args []string, jobs int, progress chan<- float64, activity chan<- app.Event, done, engine chan<- error) tea.Cmd {
 	return func() tea.Msg {
-		go func() { done <- app.Blank(ctx, args, jobs, progress, activity) }()
+		go func() {
+			err := app.Blank(ctx, args, jobs, progress, activity)
+			engine <- err
+			done <- err
+		}()
 		return nil
+	}
+}
+
+// listenForEngine reads no context, because the engine writes exactly once to a
+// buffered channel and the interface has to report the outcome of a run it has
+// already cancelled.
+func listenForEngine(engine <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		return engineDoneMsg{err: <-engine}
 	}
 }
 
