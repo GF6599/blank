@@ -149,6 +149,65 @@ func TestMarkerReservesItsCellsOnEveryRow(t *testing.T) {
 	}
 }
 
+// An activity row fits its column whatever the filename holds.
+// Given labels that carry wide characters, when a row renders at any width,
+// then it measures exactly that width.
+// Why it matters: a CJK path measures more display cells than it holds runes, so
+// a clamp that counts runes overruns the panel or panics the program, and the
+// fixture generator in utils/ writes exactly such a path.
+func TestMarkerRowFitsWideCharacters(t *testing.T) {
+	// Given: labels that mix wide and narrow characters, including one that is
+	// almost entirely wide and one that is plain ASCII for contrast.
+	for _, tc := range []struct{ name, label string }{
+		{"japanese path", "Overwriting /Users/dev/写真/家族旅行/北海道二千二十六年夏休み/海辺の夕日.jpg"},
+		{"chinese path", "Overwriting /tmp/utf8_目录/文件名.txt"},
+		{"almost all wide", "Overwriting /tmp/" + strings.Repeat("写", 60) + "/x.jpg"},
+		{"emoji", "Overwriting /tmp/holiday 🎉🎉🎉/photo.jpg"},
+		{"ascii", "Overwriting /tmp/plain/a-fairly-long-ascii-file-name.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// When: the row renders at every width the panel can offer.
+			for w := 8; w <= 120; w++ {
+				got := markerRow(w, tc.label, true)
+
+				// Then: it occupies exactly that width, so the frame cannot tear.
+				if lipgloss.Width(got) != w {
+					t.Fatalf("width %d: row measured %d: %q", w, lipgloss.Width(got), got)
+				}
+			}
+		})
+	}
+}
+
+// Both clamps budget in display cells, not in runes.
+// Given a string wider in cells than in runes, when either clamp runs, then the
+// result fits the width and keeps the end that its caller needs.
+// Why it matters: the two counts agree only for ASCII, so a rune-based clamp
+// passes every test written in English and fails on the first Japanese path.
+func TestClampsBudgetInDisplayCells(t *testing.T) {
+	// Given: strings whose cell count and rune count disagree.
+	for _, s := range []string{"", "plain.txt", "写真.jpg", strings.Repeat("写", 40), "aあiうe"} {
+		for w := 0; w <= 30; w++ {
+			// When / Then: neither clamp returns more cells than it was given.
+			if got := lipgloss.Width(clampTail(s, w)); got > w {
+				t.Errorf("clampTail(%q, %d) measured %d cells", s, w, got)
+			}
+			if got := lipgloss.Width(clampHead(s, w)); got > w {
+				t.Errorf("clampHead(%q, %d) measured %d cells", s, w, got)
+			}
+		}
+	}
+
+	// And: the tail clamp keeps the end, which is the part that names the file.
+	if got := clampTail("/very/long/path/to/secret.txt", 13); !strings.HasSuffix(got, "secret.txt") {
+		t.Errorf("clampTail dropped the filename: %q", got)
+	}
+	// And: the head clamp keeps the start, which is what reads for a label.
+	if got := clampHead("blanking complete", 8); !strings.HasPrefix("blanking complete", got) {
+		t.Errorf("clampHead did not keep the start: %q", got)
+	}
+}
+
 // Every block in the layout shares one content column.
 // Given a terminal size, when the whole view renders, then the progress row, the
 // title rule and every panel row end in the same column.

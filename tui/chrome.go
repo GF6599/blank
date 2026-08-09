@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -147,7 +148,7 @@ func markerRow(width int, label string, current bool) string {
 		return strings.Repeat(" ", max(width, 0))
 	}
 	label = clampTail(label, inner)
-	label += strings.Repeat(" ", inner-lipgloss.Width(label))
+	label += strings.Repeat(" ", max(inner-lipgloss.Width(label), 0))
 
 	lead, tail := " ", " "
 	body := rowStyle.Render(label)
@@ -158,16 +159,31 @@ func markerRow(width int, label string, current bool) string {
 	return markerStyle.Render(lead) + " " + body + " " + markerStyle.Render(tail)
 }
 
+const ellipsis = "..."
+
 // The filename identifies the target. The leading directories rarely do.
+// A wide character costs one rune and two cells, so the budget counts cells and
+// the cut runs through the same library that measures them.
 func clampTail(s string, width int) string {
-	if lipgloss.Width(s) <= width {
+	if width <= 0 {
+		return ""
+	}
+	cells := lipgloss.Width(s)
+	if cells <= width {
 		return s
 	}
-	r := []rune(s)
-	if width <= 3 {
-		return string(r[len(r)-width:])
+	keep, prefix := width, ""
+	if lead := lipgloss.Width(ellipsis); width > lead {
+		keep, prefix = width-lead, ellipsis
 	}
-	return "..." + string(r[len(r)-(width-3):])
+	// TruncateLeft keeps a grapheme whole, so a cut landing inside a wide
+	// character returns more cells than it was asked to leave. Drop one more
+	// until the result fits.
+	out := ansi.TruncateLeft(s, cells-keep, prefix)
+	for drop := cells - keep + 1; lipgloss.Width(out) > width && drop <= cells; drop++ {
+		out = ansi.TruncateLeft(s, drop, prefix)
+	}
+	return out
 }
 
 // A label reads from its start, unlike a path.
@@ -175,10 +191,7 @@ func clampHead(s string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= width {
-		return s
-	}
-	return string([]rune(s)[:width])
+	return ansi.Truncate(s, width, "")
 }
 
 func statusLine(done bool) string {
