@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+// mustEnumerate fails the test on a refusal, which no case here is about.
+func mustEnumerate(t *testing.T, args ...string) Plan {
+	t.Helper()
+	plan, err := Enumerate(args)
+	if err != nil {
+		t.Fatalf("enumerating %v: %v", args, err)
+	}
+	return plan
+}
+
 // Enumeration reports what a run would destroy and destroys nothing.
 // Given a tree of files, when it is enumerated, then the plan names every entry
 // and every file still holds its contents.
@@ -27,7 +37,7 @@ func TestEnumerateTouchesNothing(t *testing.T) {
 	}
 
 	// When: the tree is enumerated.
-	plan := Enumerate([]string{root})
+	plan := mustEnumerate(t, root)
 
 	// Then: the plan names each entry in the bucket that decides its fate.
 	if !slices.Equal(plan.Files, []string{kept}) {
@@ -66,7 +76,7 @@ func TestPlanListsTheDeepestDirectoryFirst(t *testing.T) {
 
 	// When: the tree is enumerated and read back in run order.
 	var listed []string
-	for _, target := range Enumerate([]string{root}).Targets() {
+	for _, target := range mustEnumerate(t, root).Targets() {
 		listed = append(listed, target.Path)
 	}
 
@@ -90,7 +100,7 @@ func TestPlanListsTheDeepestDirectoryFirst(t *testing.T) {
 func TestPlanCarriesTheFailuresOfItsOwnEnumeration(t *testing.T) {
 	// Given / When: a path that was never created.
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	plan := Enumerate([]string{missing})
+	plan := mustEnumerate(t, missing)
 
 	// Then: the plan holds nothing to destroy.
 	if plan.Total() != 0 {
@@ -125,7 +135,7 @@ func TestPlanTargetsCarryTheActivityVerbs(t *testing.T) {
 
 	// When: the plan is read as targets.
 	verbs := map[string]string{}
-	for _, target := range Enumerate([]string{root}).Targets() {
+	for _, target := range mustEnumerate(t, root).Targets() {
 		verbs[target.Path] = target.Verb
 	}
 

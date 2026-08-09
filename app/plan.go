@@ -59,24 +59,33 @@ func (p Plan) Targets() []Target {
 // Enumerate expands the arguments into everything a run would destroy. It reads
 // the filesystem and changes nothing, which is what lets the caller report the
 // plan, or ask about it, before any of it happens.
-func Enumerate(args []string) Plan {
+func Enumerate(args []string) (Plan, error) {
 	var plan Plan
 	fails := &failures{}
+	// Every argument is guarded before any of them is expanded, so a command
+	// line holding one protected path plans nothing at all.
+	targets := make([]string, 0, len(args))
 	for _, arg := range args {
 		absolutePath, err := filepath.Abs(arg)
 		if err != nil {
 			fails.add(arg, fmt.Errorf("resolve path: %w", err))
 			continue
 		}
-		k, err := classify(absolutePath)
+		if err := guard(absolutePath); err != nil {
+			return Plan{}, err
+		}
+		targets = append(targets, absolutePath)
+	}
+	for _, target := range targets {
+		k, err := classify(target)
 		if err != nil {
-			fails.add(absolutePath, fmt.Errorf("read path: %w", err))
+			fails.add(target, fmt.Errorf("read path: %w", err))
 			continue
 		}
-		plan.add(fails, k, absolutePath)
+		plan.add(fails, k, target)
 	}
 	plan.Failures = fails.list
-	return plan
+	return plan, nil
 }
 
 func (p *Plan) add(fails *failures, k kind, path string) {

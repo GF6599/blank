@@ -40,7 +40,10 @@ var (
 			// engine before they do.
 			closeLog := setupLogging(logToFile, !noUI)
 			defer closeLog()
-			plan := app.Enumerate(args)
+			plan, err := app.Enumerate(args)
+			if err != nil {
+				return err
+			}
 			if noUI {
 				return runHeadless(plan, opts)
 			}

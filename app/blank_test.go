@@ -75,6 +75,10 @@ func runBlankWithJobs(t *testing.T, jobs int, args ...string) result {
 // reads the outcome without repeating the fan-in.
 func runBlankWith(t *testing.T, opts Options, args ...string) result {
 	t.Helper()
+	plan, err := Enumerate(args)
+	if err != nil {
+		t.Fatalf("enumerating %v: %v", args, err)
+	}
 	progressCh := make(chan float64)
 	activityCh := make(chan Event)
 
@@ -94,7 +98,7 @@ func runBlankWith(t *testing.T, opts Options, args ...string) result {
 		}
 	}()
 
-	res.err = Blank(context.Background(), Enumerate(args), opts, progressCh, activityCh)
+	res.err = Blank(context.Background(), plan, opts, progressCh, activityCh)
 	wg.Wait()
 	return res
 }

@@ -357,7 +357,11 @@ func TestEngineOutcomeReachesBothReaders(t *testing.T) {
 	done := make(chan error, 1)
 
 	// When: the run is started and allowed to finish.
-	startBlankCmd(context.Background(), app.Enumerate([]string{absent}), app.Options{Jobs: 1},
+	plan, err := app.Enumerate([]string{absent})
+	if err != nil {
+		t.Fatalf("enumerating %s: %v", absent, err)
+	}
+	startBlankCmd(context.Background(), plan, app.Options{Jobs: 1},
 		make(chan float64), make(chan app.Event), done, engine)()
 
 	// Then: the interface learns the run ended, and so does UIStart.
