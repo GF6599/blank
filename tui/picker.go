@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"blank/app"
 )
 
 const (
@@ -20,7 +22,8 @@ const (
 
 	// ASCII, for the reason failedMark is: it must be readable on any terminal
 	// and in any font.
-	markedMark = "*"
+	markedMark  = "*"
+	refusedMark = "-"
 )
 
 type entry struct {
@@ -31,15 +34,20 @@ type entry struct {
 	// the entry rather than what it points at, and the engine reads it the same
 	// way.
 	isDir bool
+	// refusal is why the engine would decline this path, decided when the
+	// listing is read so that a render never touches the filesystem.
+	refusal error
 }
 
-func newEntry(dir string, de os.DirEntry) entry {
+func newEntry(dir string, de os.DirEntry, guard *app.Guard) entry {
 	name := de.Name()
+	path := filepath.Join(dir, name)
 	return entry{
-		path:  filepath.Join(dir, name),
-		name:  name,
-		label: name + suffixFor(de),
-		isDir: de.IsDir(),
+		path:    path,
+		name:    name,
+		label:   name + suffixFor(de),
+		isDir:   de.IsDir(),
+		refusal: guard.Refuses(path),
 	}
 }
 
@@ -84,11 +92,17 @@ func (d entryDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 
 // A marked entry is one the run will destroy, so it carries the colour the
 // survivor mark already uses rather than the accent, which says something else.
+// A refused one is muted, because it is the one row in the listing that no key
+// does anything to.
 func (d entryDelegate) stateCell(e entry) string {
-	if d.marked[e.path] {
+	switch {
+	case e.refusal != nil:
+		return hintStyle.Render(refusedMark)
+	case d.marked[e.path]:
 		return failedStyle.Render(markedMark)
+	default:
+		return " "
 	}
-	return " "
 }
 
 const (
@@ -102,10 +116,13 @@ const (
 )
 
 type pickerModel struct {
-	list         list.Model
-	dir          string
-	marked       map[string]bool
-	readErr      error
+	list    list.Model
+	dir     string
+	marked  map[string]bool
+	readErr error
+	// refusal is the answer to the key just pressed, so it lives until the next
+	// one rather than staying on screen over an unrelated row.
+	refusal      error
 	quitting     bool
 	confirmed    bool
 	contentWidth int
@@ -129,9 +146,12 @@ func newPickerModel(dir string) pickerModel {
 func (m *pickerModel) load(dir string) {
 	found, err := os.ReadDir(dir)
 	m.dir, m.readErr = dir, err
+	// One guard for the whole listing. Building it resolves every protected
+	// path, which is a read of the filesystem per symlink on the list.
+	guard := app.NewGuard()
 	entries := make([]entry, 0, len(found))
 	for _, de := range found {
-		entries = append(entries, newEntry(dir, de))
+		entries = append(entries, newEntry(dir, de, guard))
 	}
 	// A cursor left past the end of a shorter listing selects nothing at all,
 	// and a filter typed for one directory means nothing in the next.
@@ -143,6 +163,13 @@ func (m *pickerModel) load(dir string) {
 func (m *pickerModel) toggle() {
 	e, ok := m.selected()
 	if !ok {
+		return
+	}
+	if e.refusal != nil {
+		// The guard refuses the whole command line, so a protected path taken
+		// here would cancel every ordinary target beside it after the operator
+		// had finished choosing them.
+		m.refusal = e.refusal
 		return
 	}
 	if m.marked[e.path] {
@@ -185,6 +212,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		m.refusal = nil
 		// A filename holds spaces and every letter the picker binds, so while
 		// the filter is being typed every key is text rather than an action.
 		if m.list.SettingFilter() {
@@ -244,6 +272,8 @@ func (m pickerModel) title() string {
 // takes the row rather than the count that would say nothing.
 func (m pickerModel) statusText() string {
 	switch {
+	case m.refusal != nil:
+		return failedStyle.Render(failedMark) + " " + m.refusal.Error()
 	case m.list.SettingFilter():
 		return m.list.FilterInput.View()
 	case m.readErr != nil:

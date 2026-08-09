@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"blank/app"
 )
 
 func entriesIn(t *testing.T, dir string) []entry {
@@ -15,9 +17,10 @@ func entriesIn(t *testing.T, dir string) []entry {
 	if err != nil {
 		t.Fatalf("read %s: %v", dir, err)
 	}
+	guard := app.NewGuard()
 	out := make([]entry, len(found))
 	for i, de := range found {
-		out[i] = newEntry(dir, de)
+		out[i] = newEntry(dir, de, guard)
 	}
 	return out
 }
