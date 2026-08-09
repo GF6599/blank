@@ -24,6 +24,8 @@ func press(t *testing.T, m pickerModel, keys ...string) pickerModel {
 			msg = tea.KeyMsg{Type: tea.KeyBackspace}
 		case "ctrl+v":
 			msg = tea.KeyMsg{Type: tea.KeyCtrlV}
+		case "ctrl+c":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlC}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -203,6 +205,34 @@ func TestEscapeClearsTheFilterBeforeItQuits(t *testing.T) {
 	// When: escape is pressed again, then the picker gives up.
 	if m = press(t, m, "esc"); !m.quitting {
 		t.Fatal("escape did not quit an unfiltered picker")
+	}
+}
+
+// Ctrl+C leaves the picker even while the filter is open.
+// Given a filter being typed, when ctrl+c is pressed, then the picker quits and
+// hands over nothing.
+// Why it matters: ctrl+c is the key an operator reaches for when a program is
+// not doing what they expect, and the list's own quit bindings are turned off,
+// so a screen that routes it into a text input cannot be left at all.
+func TestCtrlCLeavesThePickerWhileTheFilterIsOpen(t *testing.T) {
+	// Given: a directory with a filter half typed over it.
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "notes.txt"))
+	m := openPicker(t, dir)
+	m = press(t, m, " ", "/", "n", "o")
+	if !m.list.SettingFilter() {
+		t.Fatal("the setup did not open the filter")
+	}
+
+	// When: ctrl+c is pressed.
+	m = press(t, m, "ctrl+c")
+
+	// Then: the picker gives up, and hands over nothing.
+	if !m.quitting {
+		t.Fatal("ctrl+c was swallowed by the filter input")
+	}
+	if got := m.targets(); len(got) != 0 {
+		t.Fatalf("ctrl+c handed over %v", got)
 	}
 }
 

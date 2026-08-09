@@ -213,13 +213,20 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.refusal = nil
+		// Ahead of the filter, because the list's own quit bindings are off and
+		// a screen that routes ctrl+c into a text input cannot be left at all.
+		if msg.Type == tea.KeyCtrlC {
+			m.quitting = true
+			return m, tea.Quit
+		}
 		// A filename holds spaces and every letter the picker binds, so while
-		// the filter is being typed every key is text rather than an action.
+		// the filter is being typed every other key is text rather than an
+		// action.
 		if m.list.SettingFilter() {
 			break
 		}
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "q":
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
