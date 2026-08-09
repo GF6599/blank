@@ -201,8 +201,9 @@ processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms,
 
 The log holds one line per target and names the full path of each, so it is a manifest of
 what you destroyed and where it lived. Choose a path you are willing to leave that at. It
-is created mode `0600`, readable only by you, and a path that cannot be opened stops the
-run before it destroys anything.
+is mode `0600`, readable only by you, whether the run creates it or appends to a file
+already there. A path that is a symlink, or that cannot be opened, stops the run before it
+destroys anything.
 
 ## Known limitations
 

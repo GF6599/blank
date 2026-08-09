@@ -346,6 +346,74 @@ func TestTheLogIsReadableOnlyByItsOwner(t *testing.T) {
 	}
 }
 
+// The log is narrowed even when the file was already there.
+// Given a log file an earlier run left behind with wide permissions, when a run
+// appends to it, then it carries no group or other permission afterwards.
+// Why it matters: the mode an open applies belongs to a file it creates, so a
+// manifest naming every path a run destroyed can sit in a world-readable file
+// that looks exactly like one the tool wrote.
+func TestTheLogIsNarrowedWhenItAlreadyExists(t *testing.T) {
+	// Given: a tree, and a log file anyone can read.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.log")
+	if err := os.WriteFile(manifest, []byte("from an earlier run\n"), 0o666); err != nil {
+		t.Fatalf("writing the existing log: %v", err)
+	}
+
+	// When: the run appends to it.
+	if out, code := run(t, "--no-ui", "--yes", "--log", manifest, root); code != 0 {
+		t.Fatalf("the run exited %d\n%s", code, out)
+	}
+
+	// Then: nobody but the owner can read it.
+	fi, err := os.Stat(manifest)
+	if err != nil {
+		t.Fatalf("reading the log: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("the log is mode %04o, expected no group or other access", perm)
+	}
+}
+
+// A log path that is a symlink stops the run.
+// Given a symlink where the log should go, when the run is asked to start, then
+// it refuses and the file the link points at is unchanged.
+// Why it matters: the log is opened for append, so a link left at a predictable
+// path writes the manifest into a file the operator never named, and appends to
+// whatever was in it.
+func TestARunStopsWhenItsLogPathIsASymlink(t *testing.T) {
+	// Given: a tree, and a symlink standing where the log should go.
+	root := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim.txt")
+	payload := []byte("the caller never named this file\n")
+	if err := os.WriteFile(victim, payload, 0o600); err != nil {
+		t.Fatalf("writing the victim: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.log")
+	if err := os.Symlink(victim, manifest); err != nil {
+		t.Fatalf("creating the link: %v", err)
+	}
+
+	// When: the run is asked to start.
+	out, code := run(t, "--no-ui", "--yes", "--log", manifest, root)
+
+	// Then: it refuses.
+	if code == 0 {
+		t.Fatalf("a run whose log path was a symlink exited 0\n%s", out)
+	}
+	// And: the file the link pointed at is untouched.
+	body, err := os.ReadFile(victim)
+	if err != nil || !bytes.Equal(body, payload) {
+		t.Fatalf("the run wrote through the link: contents are %q, err=%v", body, err)
+	}
+}
+
 // A log that cannot be opened stops the run before it destroys anything.
 // Given a log path in a directory that does not exist, when the run is asked to
 // start, then it exits non-zero and the tree is untouched.
