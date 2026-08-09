@@ -21,6 +21,9 @@ type (
 	directory string
 )
 
+// Files overwritten at the same time. The work is disk bound.
+const shredConcurrency = 100
+
 var (
 	shredBinary = "shred"
 	rmBinary    = "rm"
@@ -180,8 +183,8 @@ func shredFile(ctx context.Context, f file) error {
 	return nil
 }
 
-// concurrentShred fan-outs shredding work, limits in-flight jobs via a
-// semaphore, and emits live progress plus optional activity updates.
+// concurrentShred fans work out to a fixed pool of workers, and emits live
+// progress plus optional activity updates.
 func concurrentShred(ctx context.Context, w *work, fails *failures, progress chan<- float64, activity chan<- string) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -190,12 +193,10 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 	if activity != nil {
 		defer close(activity)
 	}
-	// Semaphore to limit the amount of concurrent shredding happening.
-	sema := make(chan struct{}, 100)
 	var wg sync.WaitGroup
 
 	total := w.len()
-	var done int64
+	var done atomic.Int64
 
 	sendActivity := func(format string, args ...any) {
 		if activity == nil {
@@ -219,7 +220,7 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 
 	update := func() {
 		// Increment completed items (files + directories)
-		d := atomic.AddInt64(&done, 1)
+		d := done.Add(1)
 		pct := float64(d) / float64(total)
 		if pct > 1 {
 			pct = 1
@@ -228,35 +229,39 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 		slog.Info("Overall progress", "PERCENT", pct)
 	}
 
-	// Launch file shredders
-	for _, f := range w.files {
+	// Workers pull from the queue rather than one goroutine starting per file.
+	// A semaphore bounds the work in flight but not the goroutines, so a large
+	// tree used to allocate a stack for every file before any overwrite began.
+	queue := make(chan file)
+	for range min(shredConcurrency, len(w.files)) {
 		wg.Add(1)
-		go func(f file) {
-			select {
-			case <-ctx.Done():
-				wg.Done()
-				return
-			case sema <- struct{}{}:
-			}
-			defer func() {
-				<-sema
-				update()
-				wg.Done()
-			}()
-			if err := ctx.Err(); err != nil {
-				return
-			}
-			sendActivity("Overwriting %s", string(f))
-			if err := shredFile(ctx, f); err != nil {
-				if stat, serr := os.Stat(string(f)); serr == nil {
-					err = fmt.Errorf("%w (mode %s)", err, stat.Mode())
+		go func() {
+			defer wg.Done()
+			for f := range queue {
+				if ctx.Err() != nil {
+					return
 				}
-				fails.add(string(f), err)
+				sendActivity("Overwriting %s", string(f))
+				if err := shredFile(ctx, f); err != nil {
+					if stat, serr := os.Stat(string(f)); serr == nil {
+						err = fmt.Errorf("%w (mode %s)", err, stat.Mode())
+					}
+					fails.add(string(f), err)
+				}
+				update()
 			}
-		}(f)
+		}()
 	}
 
-	// Wait until all file goroutines finish
+feed:
+	for _, f := range w.files {
+		select {
+		case <-ctx.Done():
+			break feed
+		case queue <- f:
+		}
+	}
+	close(queue)
 	wg.Wait()
 
 	// Now delete directories (sequentially) and update progress after each

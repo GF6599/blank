@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"blank/internal/testsupport"
@@ -230,6 +233,67 @@ func TestBlankReportsAFailedOverwrite(t *testing.T) {
 	// And: the file that did overwrite is gone, so the run was not abandoned.
 	if _, err := os.Stat(doomed); !os.IsNotExist(err) {
 		t.Fatalf("expected %s to be removed, err=%v", doomed, err)
+	}
+}
+
+// peakGoroutines destroys a flat tree of n files and returns the highest live
+// goroutine count seen while it ran.
+func peakGoroutines(t *testing.T, n int) int64 {
+	t.Helper()
+	root := t.TempDir()
+	for i := range n {
+		p := filepath.Join(root, fmt.Sprintf("file-%05d.txt", i))
+		if err := os.WriteFile(p, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", p, err)
+		}
+	}
+
+	var peak atomic.Int64
+	stop := make(chan struct{})
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		for {
+			if live := int64(runtime.NumGoroutine()); live > peak.Load() {
+				peak.Store(live)
+			}
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+	}()
+
+	res := runBlank(t, root)
+	close(stop)
+	<-watching
+
+	if res.err != nil {
+		t.Fatalf("expected a clean run over %d files, got %v", n, res.err)
+	}
+	return peak.Load()
+}
+
+// The engine bounds the goroutines it creates, not only the work in flight.
+// Given one small tree and one four times larger, when each is destroyed, then
+// the peak goroutine count is the same for both.
+// Why it matters: a goroutine per file allocated a stack for every file in the
+// tree before any overwrite began, so the cost grew with the tree while only the
+// concurrency limit could ever be doing work.
+func TestBlankBoundsItsGoroutines(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given / When: two runs whose file counts differ by a factor of four.
+	small := peakGoroutines(t, shredConcurrency*2)
+	large := peakGoroutines(t, shredConcurrency*8)
+
+	// Then: the peak tracks the concurrency limit, not the file count. Comparing
+	// the two runs avoids pinning a number, which would only describe how many
+	// goroutines os/exec happens to use per command today.
+	if large > small+shredConcurrency {
+		t.Fatalf("peak goroutines grew with the tree: %d for %d files, %d for %d files",
+			small, shredConcurrency*2, large, shredConcurrency*8)
 	}
 }
 
