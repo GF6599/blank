@@ -8,12 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"blank/internal/testsupport"
 )
 
 func TestHeadlessCLIShredsFiles(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 	t.Setenv("GOCACHE", filepath.Join(t.TempDir(), "gocache"))
 
 	dataDir := t.TempDir()

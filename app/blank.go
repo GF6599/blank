@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -37,7 +36,6 @@ const DefaultJobs = 16
 const DefaultPasses = 10
 
 var (
-	rmBinary = "rm"
 	// A listing failure is the one fault the filesystem cannot be made to
 	// produce on demand, so the walk reads the directory through this.
 	readDir = os.ReadDir
@@ -274,12 +272,15 @@ func removeEntry(r removal) error {
 	return nil
 }
 
-// shredDir removes a directory tree by invoking `rm -rf` via the provided context.
-func shredDir(ctx context.Context, d directory) error {
+// removeDir removes one directory and never its contents. os.Remove refuses a
+// directory that still holds anything, which is what turns a target the run
+// failed to destroy into a reported failure. `rm -rf` removed the directory
+// either way, so a file whose contents were never overwritten was unlinked all
+// the same: the caller lost the file and the plaintext stayed on the disk.
+func removeDir(d directory) error {
 	slog.Info("Deleting directory", "DIR", string(d))
-	cmd := exec.CommandContext(ctx, rmBinary, "-rf", string(d))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rm -rf failed: %w (output: %s)", err, string(out))
+	if err := os.Remove(string(d)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove directory: %w", err)
 	}
 	return nil
 }
@@ -383,12 +384,14 @@ feed:
 		update()
 	}
 
-	// Now delete directories (sequentially) and update progress after each
-	for _, dir := range w.directories {
+	// Deepest first. walk appends a directory before the entries inside it, so
+	// reading its output backwards always reaches a child before its parent,
+	// which is the order os.Remove needs.
+	for _, dir := range slices.Backward(w.directories) {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		runTarget(verbDir, string(dir), func() error { return shredDir(ctx, dir) })
+		runTarget(verbDir, string(dir), func() error { return removeDir(dir) })
 		update()
 	}
 }

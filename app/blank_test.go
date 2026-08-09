@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-
-	"blank/internal/testsupport"
 )
 
 type result struct {
@@ -108,7 +106,6 @@ func runBlankWith(t *testing.T, opts Options, args ...string) result {
 // an unbounded pool starts hundreds at once. That thrashes the disk, and it fills
 // the panel in one instant with rows nobody can read as they settle.
 func TestJobsBoundsTheTargetsInFlight(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	for _, jobs := range []int{1, 4} {
 		t.Run(fmt.Sprintf("jobs=%d", jobs), func(t *testing.T) {
@@ -175,7 +172,6 @@ func TestJobsBelowOneIsRefused(t *testing.T) {
 }
 
 func TestBlankEmitsProgressAndActivity(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	root := t.TempDir()
 	file1 := filepath.Join(root, "alpha.txt")
@@ -238,7 +234,6 @@ func TestBlankReportsAnUnreadableDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions, so the read cannot fail")
 	}
-	testsupport.SetupStubCommands(t)
 
 	// Given: a tree holding one readable file and one directory nobody can read.
 	root := t.TempDir()
@@ -277,14 +272,13 @@ func TestBlankReportsAnUnreadableDirectory(t *testing.T) {
 	}
 }
 
-// A directory the walk cannot list is reported even when its removal succeeds.
-// Given a directory whose listing fails, when the run finishes, then it returns
-// an error naming the listing failure, and no file inside was ever overwritten.
-// Why it matters: the removal pass runs rm -rf, which sweeps the contents away
-// whether or not the walk ever saw them, so a swallowed listing error destroys
-// files without overwriting them and reports a clean run.
+// A directory the walk cannot list is reported, and nothing inside it is lost.
+// Given a directory whose listing fails, when the run finishes, then it names
+// the listing failure and the file inside still holds its contents.
+// Why it matters: the walk never queued that file, so the run cannot destroy it
+// safely. Reporting it and leaving it is the honest outcome, and the removal
+// pass has to refuse the directory rather than take the contents with it.
 func TestBlankReportsADirectoryItCannotList(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: an ordinary tree that rm can remove without trouble.
 	root := t.TempDir()
@@ -328,6 +322,18 @@ func TestBlankReportsADirectoryItCannotList(t *testing.T) {
 	if string(body) != "payload" {
 		t.Fatalf("expected %s never to be overwritten, its contents are now %q", inside, body)
 	}
+	// And: it is still reachable by name, because the directory holding it was
+	// refused rather than swept.
+	if _, err := os.Stat(inside); err != nil {
+		t.Fatalf("the file was unlinked without ever being overwritten: %v", err)
+	}
+	// And: so is every directory above it, because os.Remove refuses each one
+	// in turn while it still holds something.
+	for _, dir := range []string{sub, root} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("%s was removed while it still held something: %v", dir, err)
+		}
+	}
 }
 
 // A file the overwrite fails on is reported and left on disk.
@@ -336,7 +342,6 @@ func TestBlankReportsADirectoryItCannotList(t *testing.T) {
 // Why it matters: counting a failed overwrite as done let the directory pass
 // unlink the file with its contents intact, and the run still exited zero.
 func TestBlankReportsAFailedOverwrite(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: one ordinary file, and one in a directory that will not accept the
 	// rename that ends an overwrite.
@@ -374,7 +379,6 @@ func TestBlankReportsAFailedOverwrite(t *testing.T) {
 // moment the work is queued, so a reader is told a file is gone while the
 // overwrite is still running, or after it has already failed.
 func TestBlankReportsTheOutcomeOfEachTarget(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: one ordinary file, and one in a directory that will not accept the
 	// rename that ends an overwrite.
@@ -453,7 +457,6 @@ func peakGoroutines(t *testing.T, n int) int64 {
 // tree before any overwrite began, so the cost grew with the tree while only the
 // concurrency limit could ever be doing work.
 func TestBlankBoundsItsGoroutines(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given / When: two runs whose file counts differ by a factor of four.
 	small := peakGoroutines(t, DefaultJobs*2)
@@ -475,7 +478,6 @@ func TestBlankBoundsItsGoroutines(t *testing.T) {
 // could set the window title, move the cursor, or hide the rest of the line,
 // and the tree being destroyed is often not the operator's own.
 func TestBlankEscapesControlCharactersInNames(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a file whose name holds an escape sequence and a bell. Every byte
 	// except a slash and a null is legal in a name, so this is a real file.
@@ -545,7 +547,6 @@ func TestBlankReportsAMissingArgument(t *testing.T) {
 // somewhere else on disk and the run still reports success. That is the tool
 // destroying data nobody asked it to destroy.
 func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a symlink to a file the run is not asked to destroy.
 	root := t.TempDir()
@@ -585,7 +586,6 @@ func TestSymlinkArgumentLeavesItsTargetIntact(t *testing.T) {
 // Why it matters: the overwrite opens the FIFO and waits for a writer that never
 // arrives, so one named pipe anywhere in the tree stops the whole run for ever.
 func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a tree holding an ordinary file and a FIFO.
 	root := t.TempDir()
@@ -627,7 +627,6 @@ func TestSpecialFileIsRemovedWithoutAnOverwrite(t *testing.T) {
 // Why it matters: enumeration used to remove these as it walked, so moving them
 // into the queue could quietly start following them instead.
 func TestSymlinkInsideATreeLeavesItsTargetIntact(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a tree whose only symlink points outside it.
 	outside := t.TempDir()
@@ -661,7 +660,6 @@ func TestSymlinkInsideATreeLeavesItsTargetIntact(t *testing.T) {
 // and no share of the progress, so the bar reaches 100% having counted fewer
 // targets than the run actually touched.
 func TestRemovedTargetsAreReportedLikeAnyOther(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a tree whose only entry is a symlink.
 	root := t.TempDir()
@@ -690,7 +688,6 @@ func TestRemovedTargetsAreReportedLikeAnyOther(t *testing.T) {
 // that reached the parent first would have to destroy the entry as a side effect
 // of removing the parent, and could not report it as a target of its own.
 func TestRemovalsRunBeforeTheDirectoryHoldingThem(t *testing.T) {
-	testsupport.SetupStubCommands(t)
 
 	// Given: a tree whose only entry is a symlink.
 	root := t.TempDir()
@@ -741,5 +738,43 @@ func TestBlankRefusesANegativePassCount(t *testing.T) {
 	}
 	if string(body) != "payload" {
 		t.Fatalf("a refused run still overwrote the file, contents are now %q", body)
+	}
+}
+
+// Directories are removed from the deepest one first.
+// Given a nested tree, when the run finishes, then each directory is reached
+// only after everything inside it, and the whole tree is gone.
+// Why it matters: os.Remove refuses a directory that still holds anything, so a
+// parent reached first fails on every tree deeper than one level, and the run
+// would report failures for a tree it destroyed perfectly well.
+func TestDirectoriesAreRemovedDeepestFirst(t *testing.T) {
+	// Given: a tree three directories deep with a file at the bottom.
+	root := t.TempDir()
+	middle := filepath.Join(root, "middle")
+	deep := filepath.Join(middle, "deep")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatalf("creating the tree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "payload.txt"), []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+
+	// When: the run finishes.
+	res := runBlank(t, root)
+
+	// Then: it destroyed the whole tree.
+	if res.err != nil {
+		t.Fatalf("expected a clean run, got %v", res.err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("expected the tree to be gone, err=%v", err)
+	}
+	// And: each directory was reached after the one inside it.
+	at := func(path string) int {
+		return slices.IndexFunc(res.activity, func(e Event) bool { return e.Path == path })
+	}
+	if !(at(deep) < at(middle) && at(middle) < at(root)) {
+		t.Fatalf("directories were reached in the order deep=%d middle=%d root=%d, expected deepest first",
+			at(deep), at(middle), at(root))
 	}
 }
