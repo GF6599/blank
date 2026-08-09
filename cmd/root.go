@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ var (
 	noUI      bool
 	logToFile bool
 	dryRun    bool
+	assumeYes bool
 	jobs      int
 	passes    int
 	rootCmd   = &cobra.Command{
@@ -52,6 +54,19 @@ var (
 				// understate what the run would destroy.
 				return plan.Err()
 			}
+			// Nothing to destroy is not worth a question, and the enumeration
+			// failures below still reach the caller.
+			if !assumeYes && plan.Total() > 0 {
+				ok, err := confirm(cmd.InOrStdin(), cmd.OutOrStdout(), plan)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					// An error rather than a clean exit, because exit zero is
+					// what this command says when everything was destroyed.
+					return errors.New("cancelled, nothing was destroyed")
+				}
+			}
 			if noUI {
 				return runHeadless(plan, opts)
 			}
@@ -64,6 +79,7 @@ func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false, "Disable the TUI and stream progress to stdout")
 	rootCmd.Flags().BoolVar(&logToFile, "log", false, "Write logs to blank.log")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List what would be destroyed and destroy nothing")
+	rootCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Destroy without asking first")
 	rootCmd.Flags().IntVar(&jobs, "jobs", app.DefaultJobs,
 		"Targets to overwrite at the same time. Raise it on a faster disk")
 	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,

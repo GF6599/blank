@@ -65,7 +65,7 @@ e2e:
 	tmp_dir="$(mktemp -d)"; \
 	trap 'rm -rf "$tmp_dir"' EXIT; \
 	python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null; \
-	go run . --no-ui "$tmp_dir"
+	go run . --no-ui --yes "$tmp_dir"
 
 # Tidy and verify go modules. Rewrites go.mod, so no other recipe depends on it.
 [group('dev')]

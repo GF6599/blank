@@ -37,10 +37,17 @@ func TestMain(m *testing.M) {
 }
 
 // run invokes the built binary and returns everything it wrote and its exit
-// code. Both streams are joined, because a caller reads them joined.
+// code. Both streams are joined, because a caller reads them joined. Nothing is
+// on standard input, which is what a command in a pipeline sees.
 func run(t *testing.T, args ...string) (string, int) {
 	t.Helper()
+	return runWithInput(t, "", args...)
+}
+
+func runWithInput(t *testing.T, stdin string, args ...string) (string, int) {
+	t.Helper()
 	cmd := exec.Command(blankBinary, args...)
+	cmd.Stdin = strings.NewReader(stdin)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -64,7 +71,7 @@ func TestHeadlessCLIShredsFiles(t *testing.T) {
 		t.Fatalf("writing target file: %v", err)
 	}
 
-	out, code := run(t, "--no-ui", dataDir)
+	out, code := run(t, "--no-ui", "--yes", dataDir)
 	if code != 0 {
 		t.Fatalf("headless CLI exited %d\nOutput:\n%s", code, out)
 	}
@@ -153,6 +160,111 @@ func TestDryRunReportsWhatItCouldNotRead(t *testing.T) {
 	}
 	if !strings.Contains(out, locked) {
 		t.Fatalf("the dry run does not name %s\n%s", locked, out)
+	}
+}
+
+// Nothing is destroyed until the operator answers the question with a whole yes.
+// Given a tree and an answer on standard input, when the run is asked to start,
+// then only a whole "yes" lets it destroy anything.
+// Why it matters: the command destroys beyond recovery and its arguments are
+// shell globs, so the last check on a mistyped target is the operator reading
+// back what is about to go. A closed input has to read as a refusal, or a
+// command in a pipeline destroys a tree nobody ever confirmed.
+func TestNothingIsDestroyedUntilTheOperatorAnswersYes(t *testing.T) {
+	for name, answer := range map[string]struct {
+		typed     string
+		destroyed bool
+	}{
+		"a whole yes":         {"yes\n", true},
+		"a yes in capitals":   {"YES\n", true},
+		"a bare y":            {"y\n", false},
+		"a no":                {"no\n", false},
+		"an empty line":       {"\n", false},
+		"no answer at all":    {"", false},
+		"a yes with padding":  {"  yes  \n", true},
+		"an answer of yes-no": {"yesno\n", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Given: a tree with something to lose.
+			root := t.TempDir()
+			victim := filepath.Join(root, "victim.txt")
+			if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+				t.Fatalf("writing the victim: %v", err)
+			}
+
+			// When: the run is given that answer.
+			out, code := runWithInput(t, answer.typed, "--no-ui", root)
+
+			// Then: the tree is gone only when the answer was a whole yes.
+			_, err := os.Stat(victim)
+			if gone := os.IsNotExist(err); gone != answer.destroyed {
+				t.Fatalf("the file was destroyed=%v, expected %v\n%s", gone, answer.destroyed, out)
+			}
+			// And: a run that destroyed nothing does not exit as if it had.
+			if !answer.destroyed && code == 0 {
+				t.Fatalf("a refused run exited 0\n%s", out)
+			}
+			if answer.destroyed && code != 0 {
+				t.Fatalf("a confirmed run exited %d\n%s", code, out)
+			}
+		})
+	}
+}
+
+// The question names what is about to go.
+// Given a tree of known shape, when the run asks, then the question counts the
+// files, the removals, and the directories.
+// Why it matters: a bare "are you sure" is answered yes by reflex. The counts
+// are what make a command aimed at the wrong directory visible in time.
+func TestThePromptCountsWhatIsAboutToBeDestroyed(t *testing.T) {
+	// Given: a tree holding two files, one symlink, and two directories.
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("creating the nested directory: %v", err)
+	}
+	for _, name := range []string{"one.txt", "nested/two.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("payload"), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(root, "one.txt"), filepath.Join(root, "link")); err != nil {
+		t.Fatalf("creating the symlink: %v", err)
+	}
+
+	// When: the run asks and is refused.
+	out, _ := runWithInput(t, "no\n", "--no-ui", root)
+
+	// Then: the question counts each kind.
+	for _, want := range []string{"2 files", "1 symlink or special file", "2 directories"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the question does not say %q\n%s", want, out)
+		}
+	}
+}
+
+// A scripted run skips the question rather than hanging on it.
+// Given no answer on standard input, when the run is given --yes, then the tree
+// is destroyed.
+// Why it matters: the prompt would otherwise make the command unusable from a
+// script or a cron job, which is the pressure that gets safety checks removed.
+func TestYesSkipsTheQuestion(t *testing.T) {
+	// Given: a tree with something to lose, and nothing on standard input.
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the victim: %v", err)
+	}
+
+	// When: the run is given --yes.
+	out, code := run(t, "--no-ui", "--yes", root)
+
+	// Then: it destroyed the tree and exited clean.
+	if code != 0 {
+		t.Fatalf("a run with --yes exited %d\n%s", code, out)
+	}
+	if _, err := os.Stat(victim); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be destroyed, err=%v", victim, err)
 	}
 }
 

@@ -1,11 +1,29 @@
 package cmd
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"blank/app"
 )
+
+// confirm asks before anything is destroyed. Only a whole "yes" goes on: the
+// answer to a question nothing can undo should not be reachable by a stray
+// keystroke. A closed input reads as a refusal rather than a wait, so a command
+// in a pipeline stops instead of destroying a tree nobody confirmed.
+func confirm(in io.Reader, out io.Writer, plan app.Plan) (bool, error) {
+	fmt.Fprintf(out, "blank will destroy %s.\n", planSummary(plan))
+	fmt.Fprint(out, "This cannot be undone. Type yes to continue: ")
+	answer, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read the answer: %w", err)
+	}
+	fmt.Fprintln(out)
+	return strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
+}
 
 // printPlan writes every target a run would reach, one per line, in the order
 // it would reach them. Long output is the point: a count alone cannot tell the
