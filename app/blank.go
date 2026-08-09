@@ -59,7 +59,32 @@ func (r *IncompleteRun) Error() string {
 			fmt.Fprintf(&b, "\n  and %d more", len(r.Failures)-failuresNamed)
 			break
 		}
-		fmt.Fprintf(&b, "\n  %s: %v", f.Path, f.Err)
+		fmt.Fprintf(&b, "\n  %s", displayText(fmt.Sprintf("%s: %v", f.Path, f.Err)))
+	}
+	return b.String()
+}
+
+// unsafeForTerminal reports the C0 controls, DEL, and the C1 range.
+func unsafeForTerminal(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// displayText makes text safe to write to a terminal. A filename is chosen by
+// whoever wrote the file, not by whoever destroys it, and a control character
+// inside one can set the window title, move the cursor, or hide the rest of the
+// line. Every escaped rune is below 0x100, so two hex digits always fit.
+func displayText(s string) string {
+	if strings.IndexFunc(s, unsafeForTerminal) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unsafeForTerminal(r) {
+			fmt.Fprintf(&b, `\x%02x`, r)
+			continue
+		}
+		b.WriteRune(r)
 	}
 	return b.String()
 }
@@ -202,7 +227,7 @@ func concurrentShred(ctx context.Context, w *work, fails *failures, progress cha
 		if activity == nil {
 			return
 		}
-		msg := fmt.Sprintf(format, args...)
+		msg := displayText(fmt.Sprintf(format, args...))
 		select {
 		case <-ctx.Done():
 			return

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -294,6 +295,49 @@ func TestBlankBoundsItsGoroutines(t *testing.T) {
 	if large > small+shredConcurrency {
 		t.Fatalf("peak goroutines grew with the tree: %d for %d files, %d for %d files",
 			small, shredConcurrency*2, large, shredConcurrency*8)
+	}
+}
+
+// A filename cannot carry a terminal escape into what the run prints.
+// Given a file whose name holds control characters, when the run reports it,
+// then neither the activity stream nor the error carries a control character.
+// Why it matters: both are written straight to a terminal, so a crafted name
+// could set the window title, move the cursor, or hide the rest of the line,
+// and the tree being destroyed is often not the operator's own.
+func TestBlankEscapesControlCharactersInNames(t *testing.T) {
+	testsupport.SetupStubCommands(t)
+
+	// Given: a file whose name holds an escape sequence and a bell. Every byte
+	// except a slash and a null is legal in a name, so this is a real file.
+	root := t.TempDir()
+	nasty := filepath.Join(root, "evil\x1b]0;hijacked\x07\x08\x0a.txt")
+	if err := os.WriteFile(nasty, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the crafted file: %v", err)
+	}
+	t.Setenv(testsupport.FailMarker, "evil")
+
+	// When: the run reports it, both as activity and as a survivor.
+	res := runBlank(t, root)
+
+	// Then: nothing the run emits carries a control character.
+	if res.err == nil {
+		t.Fatalf("expected the refused overwrite to be reported")
+	}
+	emitted := append(slices.Clone(res.activity), res.err.Error())
+	for _, line := range emitted {
+		for _, r := range line {
+			if r == '\n' {
+				continue
+			}
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Fatalf("control character %#U reached the terminal in %q", r, line)
+			}
+		}
+	}
+	// And: the name is still recognisable, so the operator can act on it.
+	joined := strings.Join(emitted, "\n")
+	if !strings.Contains(joined, "evil") || !strings.Contains(joined, ".txt") {
+		t.Fatalf("the escaped name lost its readable parts: %q", joined)
 	}
 }
 
