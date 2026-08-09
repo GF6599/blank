@@ -188,7 +188,7 @@ ending in `@` is a symlink, and marking one destroys the link and never what it 
 | --- | --- |
 | `space` | Mark or unmark the entry under the cursor |
 | `l`, `right` | Go into the directory under the cursor |
-| `h`, `left`, `backspace` | Go up one directory |
+| `h`, `left`, `backspace` | Go up one directory, and stop at a protected one |
 | `j`, `k`, `up`, `down` | Move the cursor |
 | `/` | Filter this directory by name |
 | `enter` | Done. Hand the marked set to the run |
@@ -198,6 +198,20 @@ ending in `@` is a symlink, and marking one destroys the link and never what it 
 A mark holds while you browse, so targets in several directories go to one run. The count
 beside the position says how many are marked, and a filter reports how much of the
 directory it is hiding.
+
+**The selector never lists a protected directory.** It refuses to open in one, and the up
+key stops at the first one above you. Marking a row costs one keystroke, and the command
+line costs a typed path, so the selector holds to the stricter rule.
+
+```console
+$ cd ~ && blk
+Error: /home/dev is a protected path, which blank refuses to destroy, so it will not open
+a selector there either. Name a path on the command line, or change to a narrower
+directory first.
+```
+
+Going down never needs a check. A directory that holds a protected path is refused itself,
+so nothing the selector is allowed to list has one inside it.
 
 The selector needs a terminal. With `--no-ui`, or with anything other than a terminal on
 standard input, `blk` with no arguments prints the usage instead, so a script never waits
@@ -280,7 +294,12 @@ These are properties of the current implementation. Each one is reproducible.
   number of passes removes it. Full disk encryption is the answer that does.
 - **The selector does not go into a symlink.** The engine unlinks a symlink and never reads
   through one, so the selector reads it the same way and the arrow key does nothing on one.
-  Name the path on the command line to reach what is behind it.
+  Name the path on the command line to reach what is behind it. Where you start is the one
+  exception: a working directory reached through a symlink is resolved before it is
+  checked, because the selector lists what it points at.
+- **The selector is confined to the tree below the nearest protected directory.** From
+  `~/projects` you can browse anything under it, and you cannot go up into your home
+  directory. Name a path on the command line to reach anything higher.
 - **The selector reads a large directory in one go.** A directory of 10,000 entries took
   117ms to list on an NVMe disk, because every entry is checked against the protected paths
   as it is read. Nothing is drawn until that finishes.
