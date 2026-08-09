@@ -50,33 +50,57 @@ func protectedPaths() []string {
 // The last component is left as it was: a symlink argument is unlinked rather
 // than followed, so resolving it would refuse a link whose target the run never
 // opens.
-func realPath(path string) string {
+//
+// The answer is kept because every entry in one directory listing shares a
+// parent, and resolving it 10,000 times cost 146ms of a 208ms load.
+func (g *Guard) realPath(path string) string {
 	dir, base := filepath.Split(path)
-	real, err := filepath.EvalSymlinks(filepath.Clean(dir))
-	if err != nil {
+	parent := filepath.Clean(dir)
+	real, seen := g.resolved[parent]
+	if !seen {
+		// The empty string records a parent that cannot be resolved, so a
+		// second look does not read the filesystem again either.
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			real = resolved
+		}
+		g.resolved[parent] = real
+	}
+	if real == "" {
 		return path
 	}
 	return filepath.Join(real, base)
 }
 
-// guard reports why a run refuses to destroy path. A path is refused when it is
-// protected, and also when it holds a protected path, because destroying a
-// directory destroys everything under it. That second rule is the one that
-// works: a list of names cannot know that home lives under /mnt/nfs on this
-// machine, and comparing against home itself does.
+// Guard reports what a run refuses to destroy. Building one resolves every
+// protected path, and checking one resolves its parent, so a caller with a
+// directory full of paths builds a single Guard and reuses it. One Guard belongs
+// to one goroutine, because the answers it keeps are written as it works.
+type Guard struct {
+	protected []string
+	resolved  map[string]string
+}
+
+func NewGuard() *Guard {
+	return &Guard{protected: protectedPaths(), resolved: map[string]string{}}
+}
+
+// Refuses reports why a run will not destroy path, and nil when it will. A path
+// is refused when it is protected, and also when it holds a protected path,
+// because destroying a directory destroys everything under it. That second rule
+// is the one that works: a list of names cannot know that home lives under
+// /mnt/nfs on this machine, and comparing against home itself does.
 //
 // There is no flag to override a refusal. The answer to one is to name a
 // narrower path, which is also the answer to the mistake the guard catches.
-func guard(path string) error {
-	protected := protectedPaths()
-	if err := refuse(path, protected); err != nil {
+func (g *Guard) Refuses(path string) error {
+	if err := refuse(path, g.protected); err != nil {
 		return err
 	}
-	real := realPath(path)
+	real := g.realPath(path)
 	if real == path {
 		return nil
 	}
-	if err := refuse(real, protected); err != nil {
+	if err := refuse(real, g.protected); err != nil {
 		return fmt.Errorf("%s resolves to %s: %w", displayText(path), displayText(real), err)
 	}
 	return nil

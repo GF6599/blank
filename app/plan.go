@@ -63,6 +63,7 @@ func Enumerate(args []string) (Plan, error) {
 	e := &enumeration{fails: &failures{}, seen: map[string]bool{}}
 	// Every argument is guarded before any of them is expanded, so a command
 	// line holding one protected path plans nothing at all.
+	guard := NewGuard()
 	targets := make([]string, 0, len(args))
 	for _, arg := range args {
 		absolutePath, err := filepath.Abs(arg)
@@ -70,7 +71,7 @@ func Enumerate(args []string) (Plan, error) {
 			e.fails.add(arg, fmt.Errorf("resolve path: %w", err))
 			continue
 		}
-		if err := guard(absolutePath); err != nil {
+		if err := guard.Refuses(absolutePath); err != nil {
 			return Plan{}, err
 		}
 		targets = append(targets, absolutePath)
