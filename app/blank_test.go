@@ -357,6 +357,36 @@ func TestOverlappingArgumentsReportNoSurvivor(t *testing.T) {
 	}
 }
 
+// A caller that wants neither stream still gets a run.
+// Given no progress channel and no activity channel, when the run finishes,
+// then the tree is gone and it reports no failure.
+// Why it matters: the activity channel is optional, so the progress channel
+// beside it reads as optional too. A send on a nil channel waits for ever, so a
+// caller who passes neither hangs on the first target rather than being refused.
+func TestARunNeedsNeitherStream(t *testing.T) {
+	// Given: a tree with something to lose.
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing the victim: %v", err)
+	}
+	plan, err := Enumerate([]string{root})
+	if err != nil {
+		t.Fatalf("enumerating %s: %v", root, err)
+	}
+
+	// When: the run is given no channels at all.
+	err = Blank(context.Background(), plan, Options{Jobs: 1, Passes: 1}, nil, nil)
+
+	// Then: it reports no failure, and the tree is gone.
+	if err != nil {
+		t.Fatalf("a run with no streams reported %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("expected the tree to be gone, err=%v", err)
+	}
+}
+
 // A directory the walk cannot read is reported, not skipped in silence.
 // Given a directory with no read permission, when the run finishes, then it
 // returns an error naming that directory and the files inside are still there.

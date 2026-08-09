@@ -159,8 +159,9 @@ type Options struct {
 }
 
 // Blank destroys everything the plan holds, streaming progress and activity as
-// it goes. It returns an error naming every target that survived, including the
-// ones the enumeration behind the plan already could not read.
+// it goes. Either channel may be nil, for a caller that wants only the outcome.
+// It returns an error naming every target that survived, including the ones the
+// enumeration behind the plan already could not read.
 func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64, activity chan<- Event) error {
 	// Refused rather than clamped, and refused here rather than per target, so a
 	// bad value stops the run before it destroys anything.
@@ -186,7 +187,9 @@ func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64
 // closeStreams ends both streams. A reader ranges over them, so a run that
 // returns without closing them leaves that reader waiting for ever.
 func closeStreams(progress chan<- float64, activity chan<- Event) {
-	close(progress)
+	if progress != nil {
+		close(progress)
+	}
 	if activity != nil {
 		close(activity)
 	}
@@ -245,6 +248,11 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 	}
 
 	sendProgress := func(pct float64) {
+		// A send on a nil channel waits for ever, which is a hang rather than
+		// the panic a missing stream would otherwise announce.
+		if progress == nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
