@@ -120,7 +120,8 @@ var panelSides = lipgloss.NewStyle().
 	BorderForeground(colorBorder)
 
 const (
-	controlsFull  = "[jk] scroll  [q] quit"
+	controlsFull  = "[/] filter  [jk] scroll  [q] quit"
+	controlsMid   = "[jk] scroll  [q] quit"
 	controlsShort = "[q] quit"
 	barMinWidth   = 10
 	controlsGap   = 2
@@ -128,7 +129,7 @@ const (
 
 // A narrow terminal drops the hint rather than overrunning the content column.
 func controlsFor(contentWidth int) string {
-	for _, c := range []string{controlsFull, controlsShort} {
+	for _, c := range []string{controlsFull, controlsMid, controlsShort} {
 		if contentWidth >= barMinWidth+controlsGap+lipgloss.Width(c) {
 			return c
 		}

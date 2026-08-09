@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -83,10 +84,31 @@ type model struct {
 	ticking       bool
 	// Named for the false case, so a model built as a literal follows the run
 	// without having to say so.
-	detached     bool
-	rows         []activityRow
+	detached bool
+	rows     []activityRow
+	// filterText narrows what the panel draws and never what the model holds,
+	// so a target that settles behind the filter still settles.
+	filterText   string
+	filtering    bool
+	filter       textinput.Model
 	contentWidth int
 	termHeight   int
+}
+
+// The filter is built when it opens rather than held in the model, because the
+// only state worth keeping between two opens is the text, which already is.
+func newLogFilter(text string) textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = "filter: "
+	ti.PromptStyle = hintStyle
+	ti.TextStyle = rowStyle
+	// The clipboard read execs pbpaste on macOS and xclip elsewhere, and every
+	// other thing blank does is a standard library call.
+	ti.KeyMap.Paste.Unbind()
+	ti.SetValue(text)
+	ti.CursorEnd()
+	ti.Focus()
+	return ti
 }
 
 var viewportWrapperStyle = lipgloss.NewStyle().MarginLeft(padding)
@@ -143,14 +165,35 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Ahead of the filter, because this screen is destroying files and the
+		// key that stops it must never become text in an input.
+		if msg.Type == tea.KeyCtrlC {
+			m.aborted = true
+			m.cancel()
+			return m, tea.Quit
+		}
+		if m.filtering {
+			return m.updateFilter(msg)
+		}
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "q", "esc":
+			if msg.String() == "esc" && m.filterText != "" {
+				// Escape backs out of the filter before it backs out of the
+				// run, the way it does in the selector.
+				m.filterText = ""
+				m.viewport.SetContent(m.activityView())
+				return m, nil
+			}
 			// Quitting stops the message loop, so the engine's outcome never
 			// arrives. Bubble Tea renders the model returned here one last
 			// time, which is the only chance to say the run was stopped.
 			m.aborted = true
 			m.cancel()
 			return m, tea.Quit
+		case "/":
+			m.filter = newLogFilter(m.filterText)
+			m.filtering = true
+			return m, textinput.Blink
 		case "up", "k":
 			m.viewport.ScrollUp(1)
 		case "down", "j":
@@ -237,6 +280,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// updateFilter owns every key while the input is open. The panel narrows as the
+// text is typed, so what is on screen is always the answer to what is in the
+// box. Enter puts the box away and keeps the text, escape throws both away.
+func (m model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch msg.Type {
+	case tea.KeyEnter:
+		m.filtering = false
+	case tea.KeyEsc:
+		m.filtering, m.filterText = false, ""
+	default:
+		m.filter, cmd = m.filter.Update(msg)
+		m.filterText = m.filter.Value()
+	}
+	m.viewport.SetContent(m.activityView())
+	if !m.detached {
+		m.viewport.GotoBottom()
+	}
+	return m, cmd
+}
+
+// matches is a fold-insensitive substring rather than a fuzzy match, because a
+// log is searched for a fragment of a path and a fuzzy match answers with every
+// row that happens to share those letters in that order.
+func (m model) matches(r activityRow) bool {
+	return m.filterText == "" ||
+		strings.Contains(strings.ToLower(r.text), strings.ToLower(m.filterText))
+}
+
+func (m model) shownRows() int {
+	if m.filterText == "" {
+		return len(m.rows)
+	}
+	shown := 0
+	for _, r := range m.rows {
+		if m.matches(r) {
+			shown++
+		}
+	}
+	return shown
+}
+
+// A filtered panel looks exactly like a short log, so the heading carries the
+// filter and both counts rather than leaving the difference to be discovered.
+func (m model) panelHeading() string {
+	if m.filterText == "" {
+		return panelTitle
+	}
+	return fmt.Sprintf("%s  %s  %d of %d", panelTitle, m.filterText, m.shownRows(), len(m.rows))
+}
+
 // note appends a target the run has reached, or settles one it already holds.
 // A settle is searched for from the newest row, because a target settles close
 // behind its own start. One the history cap has already dropped is left alone,
@@ -301,11 +395,17 @@ func (m model) stateCell(stage app.Stage) string {
 }
 
 // Only the newest line is current, so the bracket pair tracks the work as it
-// moves down the list.
+// moves down the list. The pair belongs to the newest row of the whole log and
+// not of what survived the filter, because it marks the target in flight rather
+// than the last row drawn.
 func (m model) activityView() string {
-	rows := make([]string, len(m.rows))
+	rows := make([]string, 0, len(m.rows))
+	newest := len(m.rows) - 1
 	for i, r := range m.rows {
-		rows[i] = markerRow(m.viewport.Width, m.stateCell(r.stage), r.text, i == len(m.rows)-1 && !m.completed)
+		if !m.matches(r) {
+			continue
+		}
+		rows = append(rows, markerRow(m.viewport.Width, m.stateCell(r.stage), r.text, i == newest && !m.completed))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -345,12 +445,23 @@ func (m model) View() string {
 	b.WriteString("\n")
 
 	outcome, survivors := m.outcome()
+	status := statusStyleFor(outcome).Render(statusLine(outcome, survivors, m.contentWidth))
 	b.WriteString(pad)
-	b.WriteString(statusStyleFor(outcome).Render(statusLine(outcome, survivors, m.contentWidth)))
+	b.WriteString(status)
+	if m.filtering {
+		// The box is capped against the room the verdict leaves, so a long
+		// filter scrolls inside itself rather than overrunning the column.
+		input := m.filter
+		input.Width = max(m.contentWidth-lipgloss.Width(status)-lipgloss.Width(input.Prompt)-2, 4)
+		rendered := clampHead(input.View(), max(m.contentWidth-lipgloss.Width(status)-1, 0))
+		gap := max(m.contentWidth-lipgloss.Width(status)-lipgloss.Width(rendered), 1)
+		b.WriteString(strings.Repeat(" ", gap))
+		b.WriteString(rendered)
+	}
 	b.WriteString("\n\n")
 
 	b.WriteString(pad)
-	b.WriteString(frameTop(m.contentWidth, panelTitle))
+	b.WriteString(frameTop(m.contentWidth, m.panelHeading()))
 	b.WriteString("\n")
 	b.WriteString(viewportWrapperStyle.Render(panelSides.Render(m.panelBody())))
 	return b.String()
