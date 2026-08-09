@@ -40,17 +40,23 @@ func TestPreviewRender(t *testing.T) {
 		"Overwriting /Users/dev/Documents/keys/id_rsa",
 		"Deleting directory /Users/dev/Documents/keys",
 	}
+	deep := make([]string, 40)
+	for i := range deep {
+		deep[i] = fmt.Sprintf("Overwriting /Users/dev/Documents/archive/report-%03d.pdf", i)
+	}
 	for _, tc := range []struct {
 		name string
 		w, h int
 		pct  float64
+		logs []string
 		done bool
 	}{
-		{"narrow-40x20", 40, 20, 0.33, false},
-		{"standard-80x24", 80, 24, 0.66, false},
-		{"wide-120x40", 120, 40, 1.0, true},
+		{"narrow-40x20", 40, 20, 0.33, logs, false},
+		{"standard-80x24", 80, 24, 0.66, logs, false},
+		{"wide-120x40", 120, 40, 1.0, logs, true},
+		{"scrolled-80x24", 80, 24, 0.5, deep, false},
 	} {
-		m := previewModel(t, tc.w, tc.h, tc.pct, logs, tc.done)
+		m := previewModel(t, tc.w, tc.h, tc.pct, tc.logs, tc.done)
 		var b strings.Builder
 		fmt.Fprintf(&b, "\n=== %s (declared %dx%d) ===\n", tc.name, tc.w, tc.h)
 		for i, line := range strings.Split(m.View(), "\n") {
