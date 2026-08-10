@@ -14,7 +14,9 @@ import (
 func openPickerSized(t *testing.T, dir string, w, h int) pickerModel {
 	t.Helper()
 	m := newPickerModel(dir)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	updated, _ := m.Update(m.Init()())
+	m = updated.(pickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return updated.(pickerModel)
 }
 

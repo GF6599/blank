@@ -123,6 +123,8 @@ type pickerModel struct {
 	guard   *app.Guard
 	marked  map[string]bool
 	readErr error
+	loading bool
+	loadSeq uint64
 	// refusal is the answer to the key just pressed, so it lives until the next
 	// one rather than staying on screen over an unrelated row.
 	refusal      error
@@ -140,44 +142,78 @@ func newPickerModel(dir string) pickerModel {
 	}
 	marked := map[string]bool{}
 	m := pickerModel{
-		list:   newPickerList(marked),
-		dir:    dir,
-		guard:  app.NewGuard(),
-		marked: marked,
+		list:    newPickerList(marked),
+		dir:     dir,
+		guard:   app.NewGuard(),
+		marked:  marked,
+		loading: true,
+		loadSeq: 1,
 	}
-	m.load(dir)
 	return m
 }
 
-// A directory that cannot be read keeps whatever os.ReadDir managed before it
-// failed, beside the error, rather than reading as an empty directory.
-func (m *pickerModel) load(dir string) {
-	found, err := os.ReadDir(dir)
-	m.dir, m.readErr = dir, err
-	entries := make([]entry, 0, len(found))
-	for _, de := range found {
-		entries = append(entries, newEntry(dir, de, m.guard))
+type directoryLoadedMsg struct {
+	seq     uint64
+	dir     string
+	entries []entry
+	err     error
+}
+
+type directoryRefusedMsg struct {
+	seq uint64
+	err error
+}
+
+// loadDirectoryCmd keeps filesystem reads out of Update. A slow or remote
+// directory can finish in Bubble Tea's command worker while keys and rendering
+// remain responsive.
+func loadDirectoryCmd(dir string, guard *app.Guard, seq uint64, checkGuard bool) tea.Cmd {
+	return func() tea.Msg {
+		if checkGuard {
+			if err := guard.Refuses(dir); err != nil {
+				return directoryRefusedMsg{seq: seq, err: err}
+			}
+		}
+		found, err := os.ReadDir(dir)
+		entries := make([]entry, 0, len(found))
+		for _, de := range found {
+			entries = append(entries, newEntry(dir, de, guard))
+		}
+		return directoryLoadedMsg{seq: seq, dir: dir, entries: entries, err: err}
 	}
+}
+
+func (m pickerModel) beginLoad(dir string, checkGuard bool) (pickerModel, tea.Cmd) {
+	m.loadSeq++
+	m.loading = true
+	return m, loadDirectoryCmd(dir, m.guard, m.loadSeq, checkGuard)
+}
+
+// applyDirectory replaces the list only when the command that loaded it is
+// still current. The sequence check prevents a stale response from moving the
+// picker back after a newer request.
+func (m *pickerModel) applyDirectory(msg directoryLoadedMsg) {
+	if msg.seq != m.loadSeq {
+		return
+	}
+	m.loading = false
+	m.dir, m.readErr = msg.dir, msg.err
 	// A cursor left past the end of a shorter listing selects nothing at all,
 	// and a filter typed for one directory means nothing in the next.
 	m.list.ResetFilter()
-	m.list.SetItems(toItems(entries))
+	m.list.SetItems(toItems(msg.entries))
 	m.list.Select(0)
 }
 
 // The way up is the only way the selector can reach a protected directory. A
 // directory that holds one is refused itself, so no listing the selector is
 // allowed to show has one in it, and going down stays inside what is allowed.
-func (m *pickerModel) ascend() {
+func (m pickerModel) ascend() (pickerModel, tea.Cmd) {
 	parent := filepath.Dir(m.dir)
 	if parent == m.dir {
-		return
+		return m, nil
 	}
-	if err := m.guard.Refuses(parent); err != nil {
-		m.refusal = err
-		return
-	}
-	m.load(parent)
+	return m.beginLoad(parent, true)
 }
 
 func (m *pickerModel) toggle() {
@@ -220,10 +256,23 @@ func (m pickerModel) targets() []string {
 	return out
 }
 
-func (m pickerModel) Init() tea.Cmd { return nil }
+func (m pickerModel) Init() tea.Cmd {
+	return loadDirectoryCmd(m.dir, m.guard, m.loadSeq, false)
+}
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case directoryLoadedMsg:
+		m.applyDirectory(msg)
+		return m, nil
+
+	case directoryRefusedMsg:
+		if msg.seq == m.loadSeq {
+			m.loading = false
+			m.refusal = msg.err
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
 		m.contentWidth = max(min(maxWidth, msg.Width-padding*2), minContentWidth)
@@ -264,13 +313,22 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggle()
 			return m, nil
 		case "l", "right":
+			if m.loading {
+				return m, nil
+			}
 			if e, ok := m.selected(); ok && e.isDir {
-				m.load(e.path)
+				if e.refusal != nil {
+					m.refusal = e.refusal
+					return m, nil
+				}
+				return m.beginLoad(e.path, false)
 			}
 			return m, nil
 		case "h", "left", "backspace":
-			m.ascend()
-			return m, nil
+			if m.loading {
+				return m, nil
+			}
+			return m.ascend()
 		}
 	}
 	var cmd tea.Cmd
@@ -299,6 +357,8 @@ func (m pickerModel) statusText() string {
 	switch {
 	case m.refusal != nil:
 		return failedStyle.Render(failedMark) + " " + m.refusal.Error()
+	case m.loading:
+		return "loading"
 	case m.list.SettingFilter():
 		return m.list.FilterInput.View()
 	case m.readErr != nil:

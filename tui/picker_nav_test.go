@@ -29,8 +29,13 @@ func press(t *testing.T, m pickerModel, keys ...string) pickerModel {
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
-		updated, _ := m.Update(msg)
+		var cmd tea.Cmd
+		updated, cmd := m.Update(msg)
 		m = updated.(pickerModel)
+		if m.loading && cmd != nil {
+			updated, _ = m.Update(cmd())
+			m = updated.(pickerModel)
+		}
 	}
 	return m
 }
@@ -39,8 +44,33 @@ func press(t *testing.T, m pickerModel, keys ...string) pickerModel {
 func openPicker(t *testing.T, dir string) pickerModel {
 	t.Helper()
 	m := newPickerModel(dir)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
+	updated, _ := m.Update(m.Init()())
+	m = updated.(pickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 60, Height: 30})
 	return updated.(pickerModel)
+}
+
+// The picker is ready to draw before it has read the directory it opened on.
+// Given a directory holding one entry, when the picker is built, then it lists
+// nothing until the load command has run and its message has arrived.
+// Why it matters: a read inside Update blocks every key and every repaint, so a
+// slow or remote directory would freeze the screen with no way to leave it.
+func TestPickerLoadsDirectoriesThroughACommand(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "notes.txt"))
+	m := newPickerModel(dir)
+	if len(m.list.Items()) != 0 || !m.loading {
+		t.Fatal("the constructor read the directory synchronously")
+	}
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned no directory-loading command")
+	}
+	updated, _ := m.Update(cmd())
+	m = updated.(pickerModel)
+	if m.loading || len(m.list.Items()) != 1 {
+		t.Fatalf("the loaded message left loading=%v with %d items", m.loading, len(m.list.Items()))
+	}
 }
 
 func cursorOn(t *testing.T, m pickerModel, name string) pickerModel {
