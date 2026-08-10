@@ -325,6 +325,32 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
+// A run that could not destroy everything never fills the bar.
+// Given a file whose directory refuses the rename, when every cover has landed
+// and the entry still cannot be removed, then the bar stops short of the end.
+// Why it matters: 100% printed directly above a list of targets the run did not
+// destroy reads as a contradiction, and this is the case that reaches it, since
+// every byte of work the file was weighed for was actually written.
+func TestTheBarStopsShortWhenATargetIsNotDestroyed(t *testing.T) {
+	// Given: a file whose directory refuses the rename.
+	root := t.TempDir()
+	path := filepath.Join(root, "secret.txt")
+	writeFile(t, path, bytes.Repeat([]byte{0xAB}, 4096))
+	sealDir(t, root)
+
+	// When: the run covers it and then cannot remove it.
+	res := runBlankWith(t, Options{Jobs: 1, Passes: 1}, path)
+
+	// Then: the run reports the target it could not destroy.
+	if res.err == nil {
+		t.Fatal("a run that left its only target on the disk reported success")
+	}
+	// And: the bar stopped short of the end.
+	if len(res.progress) == 0 || res.progress[len(res.progress)-1] >= 1 {
+		t.Fatalf("progress ended at %v, expected it to stop short of 1", res.progress)
+	}
+}
+
 // A large file moves the bar before it is finished.
 // Given a file of several chunks, when the run covers it, then progress reports
 // a partial position rather than only jumping when the target settles.

@@ -185,6 +185,10 @@ func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64
 
 const maxWork = int64(^uint64(0) >> 1)
 
+// The trailing unit is the removal that ends the target, the same unit a
+// removal or a directory carries alone. A file whose covers all landed but
+// which could not then be renamed or unlinked never earns it, so the bar cannot
+// reach the end while anything the run selected is still on the disk.
 func fileWork(size int64, passes int) int64 {
 	if size < 1 {
 		return 1
@@ -197,7 +201,7 @@ func fileWork(size int64, passes int) int64 {
 	if size > maxWork/covers {
 		return maxWork
 	}
-	return size * covers
+	return addWork(size*covers, 1)
 }
 
 func addWork(total, units int64) int64 {
@@ -208,8 +212,9 @@ func addWork(total, units int64) int64 {
 }
 
 // workPlan weights regular files by the bytes written over every requested
-// cover. Entries with no contents still receive one unit so removals remain
-// visible and an empty-file-only run can reach 100%.
+// cover, plus the removal that ends each one. Entries with no contents still
+// receive one unit so removals remain visible and an empty-file-only run can
+// reach 100%.
 func workPlan(plan Plan, passes int) (map[string]int64, int64) {
 	files := make(map[string]int64, len(plan.Files))
 	total := int64(len(plan.Removals) + len(plan.Directories))
@@ -306,10 +311,11 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 	// runTarget announces the target, does the work, then announces how it
 	// ended. One branch decides both the stage and the failure record, so the
 	// panel cannot settle a row that fails or leave a destroyed one running.
-	runTarget := func(verb, path string, work func() error) {
+	runTarget := func(verb, path string, work func() error) bool {
 		sendEvent(verb, path, StageStart)
 		stage := StageDone
-		if err := work(); err != nil {
+		err := work()
+		if err != nil {
 			fails.add(path, err)
 			stage = StageFailed
 		}
@@ -318,9 +324,10 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 		// reached once the files themselves are gone.
 		slog.Info(verb, "PATH", displayText(path), "STAGE", stage)
 		sendEvent(verb, path, stage)
+		return err == nil
 	}
 
-	advance := func(units int64, settle bool) {
+	advance := func(units int64, final bool) {
 		progressMu.Lock()
 		defer progressMu.Unlock()
 		workDone = min(addWork(workDone, max(units, 0)), totalWork)
@@ -328,12 +335,23 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 		// Chunk writes can be frequent. A tenth of a percent keeps a large file
 		// visibly moving without turning progress delivery into its bottleneck.
 		// Settling a target always publishes its latest position.
-		if !settle && pct < 1 && pct-lastProgress < 0.001 {
+		if !final && pct < 1 && pct-lastProgress < 0.001 {
 			return
 		}
 		lastProgress = pct
 		sendProgress(pct)
 		slog.Info("Overall progress", "PERCENT", pct)
+	}
+
+	// settle publishes the position a target ended at. A destroyed target is
+	// credited with the rest of the weight it was allowed, and one that failed
+	// keeps only the bytes that actually landed, so the bar reaches the end when
+	// the run destroyed everything and never when it did not.
+	settle := func(destroyed bool, remaining int64) {
+		if !destroyed {
+			remaining = 0
+		}
+		advance(remaining, true)
 	}
 
 	// Workers pull from the queue rather than one goroutine starting per file.
@@ -350,14 +368,14 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 					continue
 				}
 				reported := int64(0)
-				runTarget(verbFile, f, func() error {
+				destroyed := runTarget(verbFile, f, func() error {
 					return overwriteFileWithProgress(ctx, f, opts.Passes, func(n int64) {
 						units := min(n, max(fileUnits[f]-reported, 0))
 						reported += units
 						advance(units, false)
 					})
 				})
-				advance(fileUnits[f]-reported, true)
+				settle(destroyed, fileUnits[f]-reported)
 			}
 		}()
 	}
@@ -381,8 +399,7 @@ feed:
 			recordSkipped(fails, plan.Removals[i:], err)
 			break
 		}
-		runTarget(verbRemoval, r, func() error { return removeEntry(r) })
-		advance(1, true)
+		settle(runTarget(verbRemoval, r, func() error { return removeEntry(r) }), 1)
 	}
 
 	// Deepest first. walk appends a directory before the entries inside it, so
@@ -395,8 +412,7 @@ feed:
 			recordSkipped(fails, deepestFirst[i:], err)
 			break
 		}
-		runTarget(verbDir, dir, func() error { return removeDir(dir) })
-		advance(1, true)
+		settle(runTarget(verbDir, dir, func() error { return removeDir(dir) }), 1)
 	}
 }
 
