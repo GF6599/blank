@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -400,36 +399,58 @@ func TestStatusLineReportsACancelledRun(t *testing.T) {
 	}
 }
 
-// The engine's outcome reaches both of the things that need it.
-// Given a run that ends in an error, when the outcome is delivered, then the
-// interface's listener and the channel UIStart waits on both receive it.
-// Why it matters: UIStart receives after the program has returned and a pending
-// command can outlive the program, so a single shared channel would let
-// whichever receiver won leave the other blocked forever.
+// The engine's outcome reaches the model and the post-program waiter.
+// Given a run that ends in an error, when its command returns, then its message
+// and the channel UIStart waits on carry the same outcome.
+// Why it matters: Bubble Tea may stop accepting messages before the command
+// settles, while UIStart must still wait for the destructive work to stop.
 func TestEngineOutcomeReachesBothReaders(t *testing.T) {
 	// Given: a target that cannot be read, so the run ends in an error.
 	absent := filepath.Join(t.TempDir(), "absent")
-	engine := make(chan error, 1)
 	done := make(chan error, 1)
+	started := make(chan struct{})
 
 	// When: the run is started and allowed to finish.
 	plan, err := app.Enumerate([]string{absent})
 	if err != nil {
 		t.Fatalf("enumerating %s: %v", absent, err)
 	}
-	startBlankCmd(context.Background(), plan, app.Options{Jobs: 1},
-		make(chan float64), make(chan app.Event), done, engine)()
+	msg := startBlankCmd(context.Background(), plan, app.Options{Jobs: 1},
+		make(chan float64), make(chan app.Event), done, started)()
 
-	// Then: the interface learns the run ended, and so does UIStart.
-	for name, ch := range map[string]chan error{"the interface": engine, "UIStart": done} {
-		select {
-		case err := <-ch:
-			if err == nil {
-				t.Fatalf("%s received no error, so the exit code would read as success", name)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%s never received the outcome and would block forever", name)
-		}
+	// Then: the command announced that it started.
+	select {
+	case <-started:
+	default:
+		t.Fatal("the command did not announce that the engine started")
+	}
+	// And: the interface and UIStart receive the same failure.
+	engineMsg, ok := msg.(engineDoneMsg)
+	if !ok || engineMsg.err == nil {
+		t.Fatalf("the interface received %#v, expected an engine failure", msg)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("UIStart received no error, so the exit code would read as success")
+	}
+}
+
+func TestRuntimeUIFailureWaitsForTheEngine(t *testing.T) {
+	started := make(chan struct{})
+	close(started)
+	want := errors.New("engine stopped")
+	done := make(chan error, 1)
+	done <- want
+
+	got, ran := awaitEngine(errors.New("renderer failed"), started, done)
+	if !ran || !errors.Is(got, want) {
+		t.Fatalf("awaitEngine returned (%v, %v), expected the engine outcome", got, ran)
+	}
+}
+
+func TestStartupUIFailureDoesNotWaitForAnEngineThatNeverStarted(t *testing.T) {
+	got, ran := awaitEngine(errors.New("no terminal"), make(chan struct{}), make(chan error))
+	if ran || got != nil {
+		t.Fatalf("awaitEngine returned (%v, %v) before Init ran", got, ran)
 	}
 }
 

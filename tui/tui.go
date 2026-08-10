@@ -76,7 +76,7 @@ type model struct {
 	progressCh    chan float64
 	activityCh    chan app.Event
 	done          chan error
-	engineCh      chan error
+	engineStarted chan struct{}
 	engineErr     error
 	engineSettled bool
 	aborted       bool
@@ -125,18 +125,18 @@ func UIStart(plan app.Plan, opts app.Options) error {
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = busyStyle
 	m := model{
-		progress:   progressBar,
-		viewport:   vp,
-		spinner:    sp,
-		ctx:        ctx,
-		cancel:     cancel,
-		plan:       plan,
-		opts:       opts,
-		progressCh: make(chan float64),
-		activityCh: make(chan app.Event),
-		done:       make(chan error, 1),
-		engineCh:   make(chan error, 1),
-		rows:       make([]activityRow, 0, 16),
+		progress:      progressBar,
+		viewport:      vp,
+		spinner:       sp,
+		ctx:           ctx,
+		cancel:        cancel,
+		plan:          plan,
+		opts:          opts,
+		progressCh:    make(chan float64),
+		activityCh:    make(chan app.Event),
+		done:          make(chan error, 1),
+		engineStarted: make(chan struct{}),
+		rows:          make([]activityRow, 0, 16),
 	}
 	defer cancel()
 
@@ -144,20 +144,42 @@ func UIStart(plan app.Plan, opts app.Options) error {
 	// Stop the engine before waiting for it. Once the interface is gone nobody
 	// reads the progress and activity channels, so a send would block forever.
 	cancel()
+	engineErr, engineRan := awaitEngine(runErr, m.engineStarted, m.done)
 	if runErr != nil {
 		slog.Error("TUI error", "ERR", runErr)
-		return fmt.Errorf("interface failed: %w", runErr)
+		uiErr := fmt.Errorf("interface failed: %w", runErr)
+		if engineRan && engineErr != nil {
+			return errors.Join(uiErr, engineErr)
+		}
+		return uiErr
 	}
-	return <-m.done
+	if !engineRan {
+		return errors.New("interface stopped before the deletion engine started")
+	}
+	return engineErr
+}
+
+// awaitEngine distinguishes a terminal startup failure, where Init never ran,
+// from a runtime UI failure after destructive work began. The latter must wait
+// for cancellation to settle before UIStart can return.
+func awaitEngine(runErr error, started <-chan struct{}, done <-chan error) (error, bool) {
+	if runErr == nil {
+		return <-done, true
+	}
+	select {
+	case <-started:
+		return <-done, true
+	default:
+		return nil, false
+	}
 }
 
 // Init satisfies Bubble Tea's Model interface by wiring all startup commands.
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		startBlankCmd(m.ctx, m.plan, m.opts, m.progressCh, m.activityCh, m.done, m.engineCh),
+		startBlankCmd(m.ctx, m.plan, m.opts, m.progressCh, m.activityCh, m.done, m.engineStarted),
 		listenForProgressUpdate(m.ctx, m.progressCh),
 		listenForActivityUpdate(m.ctx, m.activityCh),
-		listenForEngine(m.engineCh),
 	)
 }
 
@@ -467,28 +489,15 @@ func (m model) View() string {
 	return b.String()
 }
 
-// The outcome goes to two receivers that cannot share one channel. UIStart
-// receives after the program has returned, and a command started before the
-// quit can outlive it, so whichever receiver won a shared channel would leave
-// the other blocked on an empty one. Both of these are buffered, so neither
-// send waits for a reader that may never come.
-func startBlankCmd(ctx context.Context, plan app.Plan, opts app.Options, progress chan<- float64, activity chan<- app.Event, done, engine chan<- error) tea.Cmd {
+// The command itself owns the engine work. Bubble Tea already runs commands
+// asynchronously, so another goroutine would separate the side effect from the
+// message that represents its result and make shutdown harder to account for.
+func startBlankCmd(ctx context.Context, plan app.Plan, opts app.Options, progress chan<- float64, activity chan<- app.Event, done chan<- error, started chan struct{}) tea.Cmd {
 	return func() tea.Msg {
-		go func() {
-			err := app.Blank(ctx, plan, opts, progress, activity)
-			engine <- err
-			done <- err
-		}()
-		return nil
-	}
-}
-
-// listenForEngine reads no context, because the engine writes exactly once to a
-// buffered channel and the interface has to report the outcome of a run it has
-// already cancelled.
-func listenForEngine(engine <-chan error) tea.Cmd {
-	return func() tea.Msg {
-		return engineDoneMsg{err: <-engine}
+		close(started)
+		err := app.Blank(ctx, plan, opts, progress, activity)
+		done <- err
+		return engineDoneMsg{err: err}
 	}
 }
 
