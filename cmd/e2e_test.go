@@ -309,6 +309,9 @@ func TestThePromptCountsWhatIsAboutToBeDestroyed(t *testing.T) {
 			t.Fatalf("the question does not say %q\n%s", want, out)
 		}
 	}
+	if !strings.Contains(out, root) {
+		t.Fatalf("the question does not name the selected root %s\n%s", root, out)
+	}
 }
 
 // A scripted run skips the question rather than hanging on it.

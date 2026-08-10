@@ -16,6 +16,16 @@ import (
 // in a pipeline stops instead of destroying a tree nobody confirmed.
 func confirm(in io.Reader, out io.Writer, plan app.Plan) (bool, error) {
 	fmt.Fprintf(out, "blank will destroy %s.\n", planSummary(plan))
+	fmt.Fprintln(out, "Selected roots:")
+	const rootsNamed = 5
+	roots := plan.DisplayRoots()
+	for i, root := range roots {
+		if i == rootsNamed {
+			fmt.Fprintf(out, "  ... and %d more\n", len(roots)-rootsNamed)
+			break
+		}
+		fmt.Fprintf(out, "  %s\n", root)
+	}
 	fmt.Fprint(out, "This cannot be undone. Type yes to continue: ")
 	answer, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
