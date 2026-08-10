@@ -39,13 +39,6 @@ var (
 			if err := opts.Validate(); err != nil {
 				return err
 			}
-			// The log closes when this returns, so both modes below wait for the
-			// engine before they do.
-			closeLog, err := setupLogging(logPath, !noUI)
-			if err != nil {
-				return err
-			}
-			defer closeLog()
 			if len(args) == 0 {
 				wd, wdErr := os.Getwd()
 				if wdErr != nil {
@@ -80,6 +73,10 @@ var (
 				// understate what the run would destroy.
 				return plan.Err()
 			}
+			if logPath != "" && plan.Contains(logPath) {
+				return fmt.Errorf("the log path %q is inside the selected targets; choose a path the run will not destroy",
+					logPath)
+			}
 			// Nothing to destroy is not worth a question, and the enumeration
 			// failures below still reach the caller.
 			if !assumeYes && plan.Total() > 0 {
@@ -93,6 +90,13 @@ var (
 					return errors.New("cancelled, nothing was destroyed")
 				}
 			}
+			// Opening the manifest is the last step before the engine starts. A dry
+			// run and a refused confirmation therefore make no filesystem changes.
+			closeLog, err := setupLogging(logPath, !noUI)
+			if err != nil {
+				return err
+			}
+			defer closeLog()
 			if noUI {
 				return runHeadless(plan, opts)
 			}

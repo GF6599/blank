@@ -116,6 +116,39 @@ func TestPlanCarriesTheFailuresOfItsOwnEnumeration(t *testing.T) {
 	}
 }
 
+func TestPlanRecognisesAContainedPathThroughASymlink(t *testing.T) {
+	root := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatalf("creating alias: %v", err)
+	}
+	plan, err := Enumerate([]string{root})
+	if err != nil {
+		t.Fatalf("enumerating root: %v", err)
+	}
+	if !plan.Contains(filepath.Join(alias, "manifest.log")) {
+		t.Fatal("the plan did not recognise a log path through a symlink into its tree")
+	}
+}
+
+func TestPlanRecognisesASelectedFileThroughAHardlink(t *testing.T) {
+	selected := filepath.Join(t.TempDir(), "selected")
+	if err := os.WriteFile(selected, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing selected file: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "manifest.log")
+	if err := os.Link(selected, alias); err != nil {
+		t.Fatalf("creating hardlink: %v", err)
+	}
+	plan, err := Enumerate([]string{selected})
+	if err != nil {
+		t.Fatalf("enumerating selected file: %v", err)
+	}
+	if !plan.Contains(alias) {
+		t.Fatal("the plan did not recognise a manifest hardlinked to a selected file")
+	}
+}
+
 // A dry run and a real run describe a target with the same words.
 // Given a tree holding one of each kind, when the plan is read, then each target
 // carries the verb the activity stream uses for it.

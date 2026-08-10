@@ -175,6 +175,28 @@ func TestDryRunNamesEveryTargetAndDestroysNothing(t *testing.T) {
 	}
 }
 
+// A dry run leaves the filesystem exactly as it found it.
+// Given a run asked for a manifest, when it is a dry run, then the manifest is
+// never created.
+// Why it matters: a dry run is what an operator uses to check a path before
+// trusting it, so it has to be safe to point at anything, including a path they
+// are still deciding about.
+func TestDryRunDoesNotCreateALog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload"), []byte("keep"), 0o600); err != nil {
+		t.Fatalf("writing payload: %v", err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.log")
+
+	out, code := run(t, "--dry-run", "--log", manifest, root)
+	if code != 0 {
+		t.Fatalf("dry run exited %d:\n%s", code, out)
+	}
+	if _, err := os.Lstat(manifest); !os.IsNotExist(err) {
+		t.Fatalf("dry run created the manifest: %v", err)
+	}
+}
+
 // A dry run that could not read everything says so in its exit code.
 // Given a directory the walk cannot list, when the tree is dry run, then it
 // exits non-zero and names that directory.
@@ -375,6 +397,35 @@ func TestTheLogLandsWhereItWasAsked(t *testing.T) {
 	}
 	if !strings.Contains(string(body), secret) {
 		t.Fatalf("the log does not name %s:\n%s", secret, body)
+	}
+}
+
+// A manifest cannot be placed where the same run will destroy it.
+// Given a log path inside a selected target, when the run starts, then it stops
+// before touching anything and says why.
+// Why it matters: the manifest is the only record of what was destroyed, so a
+// run that writes it into its own blast radius destroys the evidence along with
+// the tree and leaves nothing to read afterwards.
+func TestTheLogCannotLiveInsideASelectedTarget(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(victim, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("writing target: %v", err)
+	}
+	manifest := filepath.Join(root, "manifest.log")
+
+	out, code := run(t, "--no-ui", "--yes", "--log", manifest, root)
+	if code == 0 {
+		t.Fatalf("a self-destroying log path was accepted:\n%s", out)
+	}
+	if !strings.Contains(out, "inside the selected targets") {
+		t.Fatalf("the error does not explain the log refusal:\n%s", out)
+	}
+	if body, err := os.ReadFile(victim); err != nil || string(body) != "payload" {
+		t.Fatalf("the refused run changed its target: %q, %v", body, err)
+	}
+	if _, err := os.Lstat(manifest); !os.IsNotExist(err) {
+		t.Fatalf("the refused run created its manifest: %v", err)
 	}
 }
 

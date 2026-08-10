@@ -11,6 +11,9 @@ import (
 // target. A run acts on nothing else, so what the operator is shown before it
 // starts is what it works from.
 type Plan struct {
+	// roots are the absolute arguments the operator selected. They are retained
+	// for confirmation and for checking run-owned files against the blast radius.
+	roots       []string
 	Files       []string
 	Removals    []string
 	Directories []string
@@ -18,6 +21,60 @@ type Plan struct {
 	// travel with the plan because the run has to report them beside the ones
 	// it could not destroy.
 	Failures []Failure
+}
+
+// Roots returns an independent copy of the selected absolute arguments in
+// stable order.
+func (p Plan) Roots() []string {
+	return slices.Clone(p.roots)
+}
+
+// DisplayRoots returns the selected arguments escaped for a terminal.
+func (p Plan) DisplayRoots() []string {
+	roots := p.Roots()
+	for i := range roots {
+		roots[i] = displayText(roots[i])
+	}
+	return roots
+}
+
+// Contains reports whether path is one of the selected roots or lies inside a
+// directory the plan will remove. Parent symlinks are resolved on both sides so
+// two names for the same directory cannot hide a run-owned file inside it.
+func (p Plan) Contains(path string) bool {
+	want, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	want = canonicalParent(want)
+	wantInfo, _ := os.Lstat(want)
+	for _, target := range append(slices.Clone(p.roots), append(slices.Clone(p.Files), p.Removals...)...) {
+		if canonicalParent(target) == want {
+			return true
+		}
+	}
+	if wantInfo != nil && wantInfo.Mode().IsRegular() {
+		for _, target := range p.Files {
+			if info, err := os.Lstat(target); err == nil && os.SameFile(wantInfo, info) {
+				return true
+			}
+		}
+	}
+	for _, dir := range p.Directories {
+		dir = canonicalParent(dir)
+		if dir == want || holds(dir, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalParent(path string) string {
+	dir, base := filepath.Split(path)
+	if resolved, err := filepath.EvalSymlinks(filepath.Clean(dir)); err == nil {
+		return filepath.Join(resolved, base)
+	}
+	return filepath.Clean(path)
 }
 
 func (p Plan) Total() int {
@@ -73,6 +130,9 @@ func Enumerate(args []string) (Plan, error) {
 		}
 		if err := guard.Refuses(absolutePath); err != nil {
 			return Plan{}, err
+		}
+		if !slices.Contains(e.plan.roots, absolutePath) {
+			e.plan.roots = append(e.plan.roots, absolutePath)
 		}
 		targets = append(targets, absolutePath)
 	}
