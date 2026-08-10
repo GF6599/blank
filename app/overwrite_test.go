@@ -337,6 +337,29 @@ func TestObscureNameReplacesTheDirectoryEntry(t *testing.T) {
 	}
 }
 
+// An obscure name never replaces an entry the caller did not select.
+// Given every one-character hexadecimal name already occupied, when a
+// one-character target is obscured, then the operation fails and every entry
+// remains. Why it matters: rename replaces its destination on Unix, so a name
+// drawn onto an entry the caller never selected would destroy that entry too.
+func TestObscureNameNeverReplacesASibling(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"} {
+		writeFile(t, filepath.Join(root, name), []byte("keep-"+name))
+	}
+	target := filepath.Join(root, "x")
+	writeFile(t, target, []byte("target"))
+
+	if _, err := obscureName(target); err == nil {
+		t.Fatal("an exhausted name space reported success")
+	}
+	for _, name := range append([]string{"x"}, "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f") {
+		if _, err := os.Lstat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("unselected sibling %s was removed: %v", name, err)
+		}
+	}
+}
+
 // A pass count below zero is refused rather than silently ignored.
 // Given a negative pass count, when the overwrite runs, then it returns an error
 // and leaves the file alone.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -69,19 +71,30 @@ func writePasses(ctx context.Context, f *os.File, size int64, passes int, fill f
 	return nil
 }
 
+const obscureAttempts = 128
+
 // obscureName renames the entry to a meaningless name of the same length, and
 // returns the new path. The contents are destroyed by the passes, but the
 // directory entry still carries the name until it is unlinked, and a name is
 // often as telling as the file.
 func obscureName(path string) (string, error) {
 	dir, base := filepath.Split(path)
-	raw := make([]byte, (len(base)+1)/2)
-	randomFill(raw)
-	renamed := filepath.Join(dir, hex.EncodeToString(raw)[:len(base)])
-	if err := os.Rename(path, renamed); err != nil {
-		return path, fmt.Errorf("rename: %w", err)
+	for range obscureAttempts {
+		raw := make([]byte, (len(base)+1)/2)
+		randomFill(raw)
+		renamed := filepath.Join(dir, hex.EncodeToString(raw)[:len(base)])
+		if renamed == path {
+			continue
+		}
+		if err := renameNoReplace(path, renamed); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return path, fmt.Errorf("rename: %w", err)
+		}
+		return renamed, nil
 	}
-	return renamed, nil
+	return path, fmt.Errorf("rename: could not find an unused name after %d attempts", obscureAttempts)
 }
 
 // openForOverwrite opens path for writing, forcing the mode once if the current
