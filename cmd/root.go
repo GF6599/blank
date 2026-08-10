@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -209,30 +208,9 @@ func runHeadless(plan app.Plan, opts app.Options) error {
 // the open, because appending through one writes the manifest into a file the
 // operator never named.
 func openLog(path string) (*os.File, error) {
-	before, err := os.Lstat(path)
-	existed := err == nil
-	switch {
-	case existed && before.Mode()&os.ModeSymlink != 0:
-		return nil, fmt.Errorf("%s is a symlink", path)
-	case existed && !before.Mode().IsRegular():
-		return nil, fmt.Errorf("%s is not a regular file (mode %s)", path, before.Mode())
-	case !existed && !errors.Is(err, fs.ErrNotExist):
-		return nil, err
-	}
-	lf, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logMode)
+	lf, err := app.OpenLogFile(path, logMode)
 	if err != nil {
 		return nil, err
-	}
-	opened, err := lf.Stat()
-	if err != nil {
-		lf.Close()
-		return nil, err
-	}
-	// The check above and the open are two calls, so the entry can be replaced
-	// between them.
-	if existed && !os.SameFile(before, opened) {
-		lf.Close()
-		return nil, fmt.Errorf("%s was replaced while it was being opened", path)
 	}
 	if err := lf.Chmod(logMode); err != nil {
 		lf.Close()

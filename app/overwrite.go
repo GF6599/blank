@@ -102,20 +102,7 @@ func obscureName(path string) (string, error) {
 // opening it, because opening a FIFO for writing waits for a reader that a run
 // destroying the filesystem is never going to supply.
 func openForOverwrite(path string) (*os.File, int64, error) {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read path: %w", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, 0, fmt.Errorf("not a regular file (mode %s)", fi.Mode())
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if os.IsPermission(err) {
-		if chmodErr := os.Chmod(path, forcedMode); chmodErr != nil {
-			return nil, 0, fmt.Errorf("open for writing: %w (chmod also failed: %v)", err, chmodErr)
-		}
-		f, err = os.OpenFile(path, os.O_WRONLY, 0)
-	}
+	f, err := openRegularNoFollow(path, os.O_WRONLY, 0, true)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open for writing: %w", err)
 	}

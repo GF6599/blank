@@ -360,6 +360,31 @@ func TestObscureNameNeverReplacesASibling(t *testing.T) {
 	}
 }
 
+// The overwrite refuses a symlink rather than writing through it.
+// Given a symlink pointing at a file the run never named, when the overwrite
+// opens the link, then the open fails and the file it points at is unchanged.
+// Why it matters: a link left in place of a selected file redirects every cover
+// onto whatever it points at, so the run destroys a file nobody selected and
+// leaves the one they did select exactly as it was.
+func TestOpenForOverwriteRefusesASymlink(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	writeFile(t, victim, []byte("do not touch"))
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+
+	if f, _, err := openForOverwrite(link); err == nil {
+		f.Close()
+		t.Fatal("the overwrite opened a symlink")
+	}
+	body, err := os.ReadFile(victim)
+	if err != nil || string(body) != "do not touch" {
+		t.Fatalf("the symlink target changed: %q, %v", body, err)
+	}
+}
+
 // A pass count below zero is refused rather than silently ignored.
 // Given a negative pass count, when the overwrite runs, then it returns an error
 // and leaves the file alone.
