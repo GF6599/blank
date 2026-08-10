@@ -8,25 +8,26 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 
 	"blank/app"
-	tui "blank/tui"
+	"blank/tui"
 
 	"github.com/spf13/cobra"
 )
 
 const logMode os.FileMode = 0o600
 
-var (
-	noUI      bool
-	logPath   string
-	dryRun    bool
-	assumeYes bool
-	jobs      int
-	passes    int
-	rootCmd   = &cobra.Command{
+// NewRootCommand builds an independent command and flag set. Keeping the state
+// in this constructor lets tests and embedders run more than one command in a
+// process without values or loggers leaking between invocations.
+func NewRootCommand() *cobra.Command {
+	var noUI, dryRun, assumeYes bool
+	var logPath string
+	var jobs, passes int
+	rootCmd := &cobra.Command{
 		Use:   "blank [file|dir]...",
 		Short: "Destroy files and directories beyond recovery.",
 		Long: "blank overwrites every file with random data, then once with zeros, " +
@@ -38,6 +39,12 @@ var (
 			opts := app.Options{Jobs: jobs, Passes: passes}
 			if err := opts.Validate(); err != nil {
 				return err
+			}
+			// Before the enumeration, because a directory the walk cannot read
+			// is logged the moment it is found and the interface is about to
+			// draw over whatever that printed.
+			if !noUI {
+				defer quietLogger()()
 			}
 			if len(args) == 0 {
 				wd, wdErr := os.Getwd()
@@ -92,20 +99,21 @@ var (
 			}
 			// Opening the manifest is the last step before the engine starts. A dry
 			// run and a refused confirmation therefore make no filesystem changes.
-			closeLog, err := setupLogging(logPath, !noUI)
-			if err != nil {
-				return err
+			if logPath != "" {
+				closeLog, err := openManifest(logPath)
+				if err != nil {
+					return err
+				}
+				defer closeLog()
 			}
-			defer closeLog()
 			if noUI {
-				return runHeadless(plan, opts)
+				ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+				defer stop()
+				return runHeadless(ctx, cmd.OutOrStdout(), plan, opts)
 			}
 			return tui.UIStart(plan, opts)
 		},
 	}
-)
-
-func init() {
 	rootCmd.Flags().BoolVar(&noUI, "no-ui", false,
 		"Turn off the terminal interface and print one line per target to stdout")
 	rootCmd.Flags().StringVar(&logPath, "log", "",
@@ -116,6 +124,7 @@ func init() {
 		"Targets to overwrite at the same time. Raise it on a faster disk")
 	rootCmd.Flags().IntVar(&passes, "passes", app.DefaultPasses,
 		"Random passes over each file before the final zero pass")
+	return rootCmd
 }
 
 // errShowUsage says the caller asked a usage question rather than named a
@@ -159,18 +168,21 @@ func interactive(in io.Reader) bool {
 
 func Execute() {
 	// Cobra has already written the error to stderr.
-	if err := rootCmd.Execute(); err != nil {
+	if err := NewRootCommand().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func runHeadless(plan app.Plan, opts app.Options) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+func runHeadless(ctx context.Context, out io.Writer, plan app.Plan, opts app.Options) error {
 	progressCh := make(chan float64)
 	activityCh := make(chan app.Event)
 	var wg sync.WaitGroup
+	var outMu sync.Mutex
+	write := func(format string, args ...any) {
+		outMu.Lock()
+		defer outMu.Unlock()
+		fmt.Fprintf(out, format, args...)
+	}
 	wg.Add(2)
 
 	go func() {
@@ -182,7 +194,7 @@ func runHeadless(plan app.Plan, opts app.Options) error {
 		for p := range progressCh {
 			if pct := int(p * 100); pct != printed {
 				printed = pct
-				fmt.Printf("Progress: %d%%\n", pct)
+				write("Progress: %d%%\n", pct)
 			}
 		}
 	}()
@@ -195,7 +207,7 @@ func runHeadless(plan app.Plan, opts app.Options) error {
 			if e.Stage != app.StageStart {
 				continue
 			}
-			fmt.Printf("Activity: %s %s\n", e.Verb, e.Path)
+			write("Activity: %s %s\n", e.Verb, e.Path)
 		}
 	}()
 
@@ -223,24 +235,28 @@ func openLog(path string) (*os.File, error) {
 	return lf, nil
 }
 
-// setupLogging points the default logger at path, and discards it entirely when
-// no path was given and the interface owns the terminal. A path that cannot be
-// opened is returned as an error rather than warned about, because a run that
-// destroys the tree and the record of it together leaves the caller nothing to
-// read afterwards.
-func setupLogging(path string, suppress bool) (func(), error) {
-	if path == "" {
-		if suppress {
-			slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
-		}
-		return func() {}, nil
-	}
+// quietLogger silences the default logger and returns the restore. The interface
+// owns the terminal, so anything logged while it is up belongs in the manifest or
+// nowhere at all.
+func quietLogger() func() {
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})))
+	return func() { slog.SetDefault(previous) }
+}
+
+// openManifest points the default logger at path and returns the restore. A path
+// that cannot be opened is returned as an error rather than warned about,
+// because a run that destroys the tree and the record of it together leaves the
+// caller nothing to read afterwards.
+func openManifest(path string) (func(), error) {
 	lf, err := openLog(path)
 	if err != nil {
 		return nil, fmt.Errorf("open the log file: %w", err)
 	}
+	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{})))
 	return func() {
+		slog.SetDefault(previous)
 		if err := lf.Close(); err != nil {
 			slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{})).
 				Error("Failed to close the log file", "ERR", err)
