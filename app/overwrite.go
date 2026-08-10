@@ -24,6 +24,7 @@ const overwriteChunk = 1 << 20
 const forcedMode os.FileMode = 0o600
 
 type fillFunc func([]byte)
+type writeProgressFunc func(int64)
 
 func randomFill(buf []byte) {
 	n := len(buf) &^ 7
@@ -41,6 +42,10 @@ func zeroFill(buf []byte) { clear(buf) }
 // refilled for every chunk, so a random pass never repeats a block pattern that
 // would survive as a recognisable stripe.
 func writePasses(ctx context.Context, f *os.File, size int64, passes int, fill fillFunc) error {
+	return writePassesWithProgress(ctx, f, size, passes, fill, nil)
+}
+
+func writePassesWithProgress(ctx context.Context, f *os.File, size int64, passes int, fill fillFunc, progress writeProgressFunc) error {
 	if size == 0 || passes < 1 {
 		return nil
 	}
@@ -60,6 +65,9 @@ func writePasses(ctx context.Context, f *os.File, size int64, passes int, fill f
 				return fmt.Errorf("write on pass %d: %w", pass+1, err)
 			}
 			written += int64(n)
+			if progress != nil {
+				progress(int64(n))
+			}
 		}
 		// Without this the passes collapse into one write of the last pattern,
 		// because the page cache holds every earlier pass and only the final
@@ -128,6 +136,10 @@ func openForOverwrite(path string) (*os.File, int64, error) {
 // surviving. Removing a file whose overwrite failed is what makes plaintext
 // unrecoverable to the caller while leaving it recoverable from the disk.
 func overwriteFile(ctx context.Context, path string, passes int) error {
+	return overwriteFileWithProgress(ctx, path, passes, nil)
+}
+
+func overwriteFileWithProgress(ctx context.Context, path string, passes int, progress writeProgressFunc) error {
 	if passes < 0 {
 		return fmt.Errorf("passes cannot be negative, got %d", passes)
 	}
@@ -135,11 +147,11 @@ func overwriteFile(ctx context.Context, path string, passes int) error {
 	if err != nil {
 		return err
 	}
-	if err := writePasses(ctx, f, size, passes, randomFill); err != nil {
+	if err := writePassesWithProgress(ctx, f, size, passes, randomFill, progress); err != nil {
 		f.Close()
 		return err
 	}
-	if err := writePasses(ctx, f, size, 1, zeroFill); err != nil {
+	if err := writePassesWithProgress(ctx, f, size, 1, zeroFill, progress); err != nil {
 		f.Close()
 		return err
 	}

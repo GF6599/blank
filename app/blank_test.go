@@ -325,6 +325,30 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
+// A large file moves the bar before it is finished.
+// Given a file of several chunks, when the run covers it, then progress reports
+// a partial position rather than only jumping when the target settles.
+// Why it matters: a run over one large file would otherwise sit at nothing for
+// minutes, which reads as a hang and invites the operator to interrupt exactly
+// the work that must not be interrupted.
+func TestProgressMovesInsideALargeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.bin")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), overwriteChunk*2), 0o600); err != nil {
+		t.Fatalf("writing the file: %v", err)
+	}
+
+	res := runBlankWith(t, Options{Jobs: 1, Passes: 1}, path)
+	if res.err != nil {
+		t.Fatalf("blanking the file: %v", res.err)
+	}
+	if len(res.progress) < 2 {
+		t.Fatalf("progress moved only when the target settled: %v", res.progress)
+	}
+	if first := res.progress[0]; first <= 0 || first >= 1 {
+		t.Fatalf("the first in-file update was %v, expected a partial value", first)
+	}
+}
+
 // Arguments that overlap destroy the tree once and report nothing survived.
 // Given a directory and a file inside it named together, when the run finishes,
 // then the tree is gone and no target is reported as surviving.

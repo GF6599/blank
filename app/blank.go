@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 // DefaultJobs is how many targets are overwritten at the same time. The work is
@@ -184,6 +183,48 @@ func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64
 	return nil
 }
 
+const maxWork = int64(^uint64(0) >> 1)
+
+func fileWork(size int64, passes int) int64 {
+	if size < 1 {
+		return 1
+	}
+	covers := int64(passes)
+	if covers >= maxWork {
+		return maxWork
+	}
+	covers++
+	if size > maxWork/covers {
+		return maxWork
+	}
+	return size * covers
+}
+
+func addWork(total, units int64) int64 {
+	if units > maxWork-total {
+		return maxWork
+	}
+	return total + units
+}
+
+// workPlan weights regular files by the bytes written over every requested
+// cover. Entries with no contents still receive one unit so removals remain
+// visible and an empty-file-only run can reach 100%.
+func workPlan(plan Plan, passes int) (map[string]int64, int64) {
+	files := make(map[string]int64, len(plan.Files))
+	total := int64(len(plan.Removals) + len(plan.Directories))
+	for _, path := range plan.Files {
+		size := int64(0)
+		if info, err := os.Lstat(path); err == nil {
+			size = info.Size()
+		}
+		units := fileWork(size, passes)
+		files[path] = units
+		total = addWork(total, units)
+	}
+	return files, max(total, 1)
+}
+
 // closeStreams ends both streams. A reader ranges over them, so a run that
 // returns without closing them leaves that reader waiting for ever.
 func closeStreams(progress chan<- float64, activity chan<- Event) {
@@ -233,8 +274,10 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 	defer closeStreams(progress, activity)
 	var wg sync.WaitGroup
 
-	total := plan.Total()
-	var done atomic.Int64
+	fileUnits, totalWork := workPlan(plan, opts.Passes)
+	var progressMu sync.Mutex
+	var workDone int64
+	lastProgress := -1.0
 
 	sendEvent := func(verb, path string, stage Stage) {
 		if activity == nil {
@@ -277,13 +320,18 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 		sendEvent(verb, path, stage)
 	}
 
-	update := func() {
-		// Increment completed items (files + directories)
-		d := done.Add(1)
-		pct := float64(d) / float64(total)
-		if pct > 1 {
-			pct = 1
+	advance := func(units int64, settle bool) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		workDone = min(addWork(workDone, max(units, 0)), totalWork)
+		pct := float64(workDone) / float64(totalWork)
+		// Chunk writes can be frequent. A tenth of a percent keeps a large file
+		// visibly moving without turning progress delivery into its bottleneck.
+		// Settling a target always publishes its latest position.
+		if !settle && pct < 1 && pct-lastProgress < 0.001 {
+			return
 		}
+		lastProgress = pct
 		sendProgress(pct)
 		slog.Info("Overall progress", "PERCENT", pct)
 	}
@@ -301,10 +349,15 @@ func concurrentShred(ctx context.Context, plan Plan, opts Options, fails *failur
 					fails.add(f, err)
 					continue
 				}
+				reported := int64(0)
 				runTarget(verbFile, f, func() error {
-					return overwriteFile(ctx, f, opts.Passes)
+					return overwriteFileWithProgress(ctx, f, opts.Passes, func(n int64) {
+						units := min(n, max(fileUnits[f]-reported, 0))
+						reported += units
+						advance(units, false)
+					})
 				})
-				update()
+				advance(fileUnits[f]-reported, true)
 			}
 		}()
 	}
@@ -329,7 +382,7 @@ feed:
 			break
 		}
 		runTarget(verbRemoval, r, func() error { return removeEntry(r) })
-		update()
+		advance(1, true)
 	}
 
 	// Deepest first. walk appends a directory before the entries inside it, so
@@ -343,7 +396,7 @@ feed:
 			break
 		}
 		runTarget(verbDir, dir, func() error { return removeDir(dir) })
-		update()
+		advance(1, true)
 	}
 }
 
