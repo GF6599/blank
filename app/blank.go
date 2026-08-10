@@ -74,8 +74,29 @@ type Failure struct {
 	Err  error
 }
 
-// IncompleteRun reports the targets that survived. The caller believes they are
-// gone, so the error names them rather than only counting them.
+// Damaged reports that a cover landed before the run stopped, so the entry is
+// still on the disk and the contents it held are gone. A caller reads an
+// undestroyed target as an intact one, and this is the case where that is wrong.
+func (f Failure) Damaged() bool {
+	var d *damagedTarget
+	return errors.As(f.Err, &d)
+}
+
+const (
+	stateIntact  = "intact"
+	stateDamaged = "damaged, the contents are gone"
+)
+
+func (f Failure) state() string {
+	if f.Damaged() {
+		return stateDamaged
+	}
+	return stateIntact
+}
+
+// IncompleteRun reports the targets the run did not destroy. The caller believes
+// they are gone, so the error names them rather than only counting them, and it
+// says which of them still hold what they held.
 type IncompleteRun struct {
 	Failures []Failure
 }
@@ -84,18 +105,18 @@ type IncompleteRun struct {
 const failuresNamed = 10
 
 func (r *IncompleteRun) Error() string {
-	noun := "targets"
+	noun, verb := "targets", "were"
 	if len(r.Failures) == 1 {
-		noun = "target"
+		noun, verb = "target", "was"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d %s survived the run", len(r.Failures), noun)
+	fmt.Fprintf(&b, "%d %s %s not destroyed", len(r.Failures), noun, verb)
 	for i, f := range r.Failures {
 		if i == failuresNamed {
 			fmt.Fprintf(&b, "\n  and %d more", len(r.Failures)-failuresNamed)
 			break
 		}
-		fmt.Fprintf(&b, "\n  %s", displayText(fmt.Sprintf("%s: %v", f.Path, f.Err)))
+		fmt.Fprintf(&b, "\n  %s (%s)", displayText(fmt.Sprintf("%s: %v", f.Path, f.Err)), f.state())
 	}
 	return b.String()
 }
@@ -132,10 +153,11 @@ type failures struct {
 }
 
 func (f *failures) add(path string, err error) {
-	slog.Error("Target survived", "PATH", displayText(path), "ERR", err)
+	failure := Failure{Path: path, Err: err}
+	slog.Error("Target not destroyed", "PATH", displayText(path), "STATE", failure.state(), "ERR", err)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.list = append(f.list, Failure{Path: path, Err: err})
+	f.list = append(f.list, failure)
 }
 
 func (f *failures) err() error {
@@ -159,8 +181,9 @@ type Options struct {
 
 // Blank destroys everything the plan holds, streaming progress and activity as
 // it goes. Either channel may be nil, for a caller that wants only the outcome.
-// It returns an error naming every target that survived, including the ones the
-// enumeration behind the plan already could not read.
+// It returns an error naming every target it did not destroy, and whether each
+// one is intact, including the ones the enumeration behind the plan already
+// could not read.
 func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64, activity chan<- Event) error {
 	// Refused rather than clamped, and refused here rather than per target, so a
 	// bad value stops the run before it destroys anything.
@@ -169,6 +192,10 @@ func Blank(ctx context.Context, plan Plan, opts Options, progress chan<- float64
 		return err
 	}
 	fails := &failures{list: slices.Clone(plan.Failures)}
+	for _, failure := range plan.Failures {
+		slog.Error("Target not destroyed", "PATH", displayText(failure.Path),
+			"STATE", failure.state(), "ERR", failure.Err)
+	}
 	if plan.Total() == 0 {
 		slog.Info("Nothing to destroy")
 		closeStreams(progress, activity)

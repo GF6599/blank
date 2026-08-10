@@ -325,6 +325,48 @@ func TestBlankEmitsProgressAndActivity(t *testing.T) {
 	}
 }
 
+// A report says which undestroyed targets still hold what they held.
+// Given a file whose directory refuses the rename and a path that is not there,
+// when the run finishes, then it marks the first damaged and the second intact.
+// Why it matters: an operator reads every name in that list as a file they can
+// still recover, and the one the covers already reached is the case where acting
+// on that costs them the data.
+func TestTheReportSeparatesADamagedTargetFromAnIntactOne(t *testing.T) {
+	// Given: a file whose directory refuses the rename, beside a path that is
+	// not there at all.
+	root := t.TempDir()
+	covered := filepath.Join(root, "secret.txt")
+	writeFile(t, covered, []byte("payload"))
+	absent := filepath.Join(root, "absent.txt")
+	sealDir(t, root)
+
+	// When: the run names both.
+	res := runBlankWith(t, Options{Jobs: 1, Passes: 1}, covered, absent)
+
+	// Then: both are reported.
+	var incomplete *IncompleteRun
+	if !errors.As(res.err, &incomplete) {
+		t.Fatalf("the run reported %v, expected an incomplete run", res.err)
+	}
+	state := map[string]bool{}
+	for _, f := range incomplete.Failures {
+		state[f.Path] = f.Damaged()
+	}
+	// And: only the one the covers reached is marked damaged.
+	if !state[covered] {
+		t.Fatalf("%s was covered and then reported as intact", covered)
+	}
+	if state[absent] {
+		t.Fatalf("%s was never opened and was reported as damaged", absent)
+	}
+	// And: the message an operator reads says both words.
+	for _, want := range []string{stateDamaged, stateIntact} {
+		if !strings.Contains(res.err.Error(), want) {
+			t.Fatalf("the report never says %q:\n%s", want, res.err)
+		}
+	}
+}
+
 // A run that could not destroy everything never fills the bar.
 // Given a file whose directory refuses the rename, when every cover has landed
 // and the entry still cannot be removed, then the bar stops short of the end.

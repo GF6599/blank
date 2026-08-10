@@ -385,6 +385,59 @@ func TestOpenForOverwriteRefusesASymlink(t *testing.T) {
 	}
 }
 
+// An overwrite says whether it damaged the file it could not finish.
+// Given two copies of one file, when a cancel lands after the first chunk of one
+// and before any write to the other, then only the first reports damage, and
+// only the first has changed on disk.
+// Why it matters: a caller reads a target the run did not destroy as one that is
+// still intact, and a file the covers already reached holds random bytes under
+// its own name.
+func TestAnOverwriteReportsWhetherItDamagedTheFile(t *testing.T) {
+	// Given: two copies of one file, each several chunks long.
+	root := t.TempDir()
+	original := bytes.Repeat([]byte{0xAB}, overwriteChunk*4)
+	touched := filepath.Join(root, "touched.bin")
+	spared := filepath.Join(root, "spared.bin")
+	writeFile(t, touched, original)
+	writeFile(t, spared, original)
+
+	// When: a cancel lands after the first chunk of one.
+	partway, stopPartway := context.WithCancel(context.Background())
+	defer stopPartway()
+	touchedErr := Failure{Path: touched, Err: overwriteFileWithProgress(partway, touched, 10, func(int64) {
+		stopPartway()
+	})}
+
+	// And: before any write reaches the other.
+	early, stopEarly := context.WithCancel(context.Background())
+	stopEarly()
+	sparedErr := Failure{Path: spared, Err: overwriteFile(early, spared, 10)}
+
+	// Then: only the one the covers reached reports damage.
+	if !touchedErr.Damaged() {
+		t.Fatalf("a cancel after the covers began reported %v, which reads as intact", touchedErr.Err)
+	}
+	if sparedErr.Damaged() {
+		t.Fatalf("a cancel before any write reported damage: %v", sparedErr.Err)
+	}
+	// And: only that one has changed on disk.
+	if body := readFile(t, touched); bytes.Equal(body, original) {
+		t.Fatal("the file reported as damaged still holds what it held")
+	}
+	if body := readFile(t, spared); !bytes.Equal(body, original) {
+		t.Fatal("the file reported as intact was written to")
+	}
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return body
+}
+
 // A pass count below zero is refused rather than silently ignored.
 // Given a negative pass count, when the overwrite runs, then it returns an error
 // and leaves the file alone.

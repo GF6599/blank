@@ -42,41 +42,46 @@ func zeroFill(buf []byte) { clear(buf) }
 // refilled for every chunk, so a random pass never repeats a block pattern that
 // would survive as a recognisable stripe.
 func writePasses(ctx context.Context, f *os.File, size int64, passes int, fill fillFunc) error {
-	return writePassesWithProgress(ctx, f, size, passes, fill, nil)
+	_, err := writePassesWithProgress(ctx, f, size, passes, fill, nil)
+	return err
 }
 
-func writePassesWithProgress(ctx context.Context, f *os.File, size int64, passes int, fill fillFunc, progress writeProgressFunc) error {
+// The byte count is returned beside the error because it is what separates a
+// target the run left alone from one it destroyed and could not remove.
+func writePassesWithProgress(ctx context.Context, f *os.File, size int64, passes int, fill fillFunc, progress writeProgressFunc) (int64, error) {
+	covered := int64(0)
 	if size == 0 || passes < 1 {
-		return nil
+		return covered, nil
 	}
 	buf := make([]byte, min(int64(overwriteChunk), size))
 	for pass := range passes {
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("seek for pass %d: %w", pass+1, err)
+			return covered, fmt.Errorf("seek for pass %d: %w", pass+1, err)
 		}
 		for written := int64(0); written < size; {
 			if err := ctx.Err(); err != nil {
-				return err
+				return covered, err
 			}
 			chunk := buf[:min(int64(len(buf)), size-written)]
 			fill(chunk)
 			n, err := f.Write(chunk)
-			if err != nil {
-				return fmt.Errorf("write on pass %d: %w", pass+1, err)
-			}
 			written += int64(n)
+			covered += int64(n)
 			if progress != nil {
 				progress(int64(n))
+			}
+			if err != nil {
+				return covered, fmt.Errorf("write on pass %d: %w", pass+1, err)
 			}
 		}
 		// Without this the passes collapse into one write of the last pattern,
 		// because the page cache holds every earlier pass and only the final
 		// state ever reaches the device.
 		if err := f.Sync(); err != nil {
-			return fmt.Errorf("sync on pass %d: %w", pass+1, err)
+			return covered, fmt.Errorf("sync on pass %d: %w", pass+1, err)
 		}
 	}
-	return nil
+	return covered, nil
 }
 
 const obscureAttempts = 128
@@ -128,13 +133,29 @@ func openForOverwrite(path string) (*os.File, int64, error) {
 	return f, opened.Size(), nil
 }
 
+// damagedTarget marks a failure that stopped after a cover had already landed.
+// The entry is still on the disk and its contents are not, which is the opposite
+// of what a caller assumes when a run reports a target it did not destroy.
+type damagedTarget struct{ err error }
+
+func (d *damagedTarget) Error() string { return d.err.Error() }
+func (d *damagedTarget) Unwrap() error { return d.err }
+
+func markDamage(covered int64, err error) error {
+	if covered == 0 {
+		return err
+	}
+	return &damagedTarget{err: err}
+}
+
 // overwriteFile destroys the contents of a regular file, then its name, then the
 // entry. It replaces `shred -uzfn <passes>`: passes random covers, one zero
 // cover, a rename, and an unlink.
 //
-// The file is left in place when anything fails, so the caller can report it as
-// surviving. Removing a file whose overwrite failed is what makes plaintext
-// unrecoverable to the caller while leaving it recoverable from the disk.
+// A failure before the first cover leaves the file exactly as it was. A failure
+// after one leaves it on the disk holding random bytes, and says so, because
+// removing a file whose overwrite failed makes plaintext unrecoverable to the
+// caller while leaving it recoverable from the disk.
 func overwriteFile(ctx context.Context, path string, passes int) error {
 	return overwriteFileWithProgress(ctx, path, passes, nil)
 }
@@ -147,28 +168,33 @@ func overwriteFileWithProgress(ctx context.Context, path string, passes int, pro
 	if err != nil {
 		return err
 	}
-	if err := writePassesWithProgress(ctx, f, size, passes, randomFill, progress); err != nil {
+	covered, err := writePassesWithProgress(ctx, f, size, passes, randomFill, progress)
+	if err != nil {
 		f.Close()
-		return err
+		return markDamage(covered, err)
 	}
-	if err := writePassesWithProgress(ctx, f, size, 1, zeroFill, progress); err != nil {
+	zeroed, err := writePassesWithProgress(ctx, f, size, 1, zeroFill, progress)
+	covered += zeroed
+	if err != nil {
 		f.Close()
-		return err
+		return markDamage(covered, err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close: %w", err)
+		return markDamage(covered, fmt.Errorf("close: %w", err))
 	}
 	// Checked here as well because the passes above return early on a zero
 	// length file, which would otherwise let a cancelled run still unlink it.
 	if err := ctx.Err(); err != nil {
-		return err
+		return markDamage(covered, err)
 	}
 	renamed, err := obscureName(path)
 	if err != nil {
-		return err
+		return markDamage(covered, err)
 	}
 	if err := os.Remove(renamed); err != nil {
-		return fmt.Errorf("remove: %w", err)
+		// The rename already moved the entry, so the name in the report is not
+		// the name left on the disk unless this says which one to look for.
+		return markDamage(covered, fmt.Errorf("remove %s: %w", displayText(renamed), err))
 	}
 	return nil
 }
