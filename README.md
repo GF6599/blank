@@ -81,31 +81,40 @@ rather than waits. Pass `--yes` from a script.
 ```console
 $ blk ./old-project
 blank will destroy 1 file, 1 symlink or special file, and 1 directory.
+Selected roots:
+  /home/dev/old-project
 This cannot be undone. Type yes to continue:
 ```
 
-## What happens when a target survives
+## What happens when a target is not destroyed
 
 `blank` exits non-zero and names every target it did not destroy, on stderr, in both
-modes. A target survives when the walk cannot list a directory, when the overwrite fails,
-or when a directory is still not empty by the time the run reaches it.
+modes. A target is left behind when the walk cannot list a directory, when the overwrite
+fails, or when a directory is still not empty by the time the run reaches it.
+
+Each name carries the state the target was left in, because the two are opposites and the
+name alone cannot tell them apart:
+
+| State | What is on the disk |
+| --- | --- |
+| `intact` | The target still holds everything it held. The run never wrote to it. |
+| `damaged, the contents are gone` | The entry is still there and its contents are not. At least one cover landed, so what it held is unrecoverable. |
 
 ```console
 $ blk --yes ./tree
-Error: 2 targets survived the run
-  /home/dev/tree/locked: read directory: open /home/dev/tree/locked: permission denied
-  /home/dev/tree: remove directory: remove /home/dev/tree: directory not empty
+Error: 2 targets were not destroyed
+  /home/dev/tree/locked: read directory: open /home/dev/tree/locked: permission denied (intact)
+  /home/dev/tree/notes.txt: rename: permission denied (damaged, the contents are gone)
 $ echo $?
 1
 ```
 
-A target that survives keeps its directory. The removal refuses a directory that still
-holds something, so the entry stays where the caller can find it.
+A target that is left behind keeps its directory. The removal refuses a directory that
+still holds something, so the entry stays where the caller can find it.
 
-How much of a survivor is left depends on where the run stopped. A file the overwrite
-could not open still holds its contents. A file whose covers were written, and which then
-could not be renamed or unlinked, is already zeros. `blank` reports both, because both are
-targets it did not finish, and neither is a file it can promise anything about.
+A cancelled run over a large file is the usual way to reach the damaged state. The covers
+are written a megabyte at a time, so a stop lands in the middle of one, and every file in
+flight at that moment is damaged. `--jobs` files are in flight at once.
 
 The status line under the progress bar reports the same verdict, so the interface and the
 exit code cannot disagree.
@@ -114,16 +123,20 @@ exit code cannot disagree.
 | --- | --- |
 | `blanking` | The run is still going. |
 | `blanking complete` | 0. Every target was destroyed. |
-| `blanking failed, 2 targets survived` | 1. The error names them on stderr. |
-| `blanking cancelled` | 1. Every target it did not reach is named on stderr. |
+| `blanking failed, 2 targets survived` | 1. The error names them, and their state, on stderr. |
+| `blanking cancelled` | 1. Every target it did not destroy is named on stderr. |
 
-Read the exit code rather than the progress bar. The bar counts targets attempted rather
-than targets destroyed, so it reaches 100% on a run that left plaintext on disk.
+Regular files are weighted by the bytes written across every random and zero cover, plus
+one unit for the removal that ends them, so a large file moves the bar while it is being
+overwritten. Removals and directories receive one unit each. Only work that finished counts,
+and the removal unit is earned by the unlink rather than by the covers, so the bar reaches
+100% when every target was destroyed and never when one was left on the disk.
 
 Only a run that destroyed every target exits 0. A cancelled run exits non-zero and names
-what it stopped short of, because everything behind the stop is still on disk. A refused
-question, a refused path, a selector left with nothing marked, and a log that could not be
-opened all exit non-zero having destroyed nothing.
+what it stopped short of. Read that list rather than assuming a stop left everything alone,
+because a target the covers had already reached is named `damaged` and its contents are
+gone. A refused question, a refused path, a selector left with nothing marked, and a log
+that could not be opened all exit non-zero having destroyed nothing.
 
 ## Requirements
 
@@ -265,18 +278,23 @@ stay destroyed.
 | `--yes`, `-y` | Destroy without asking first. |
 | `--jobs` | Targets to overwrite at the same time. Default 16. Below 1 is refused. |
 | `--passes` | Random covers over each file before the zero cover. Default 10. Below 0 is refused. |
-| `--log <path>` | Write the run log to this path. Off by default. |
+| `--log <path>` | Write the run log outside the selected targets. Off by default. |
 | `--no-ui` | Turn off the terminal interface and print one line per target to stdout. |
 
 The work is disk bound, so the best `--jobs` value belongs to the device and not to the
 processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms, 8 took
-143ms, 100 took 177ms, and 4 took 216ms. Measure your own disk before you change it.
+143ms, 100 took 177ms, and 4 took 216ms. The default suits many small files. A few large
+ones stop improving sooner: over 4 files of 256 MiB on the same disk, 4 workers took 0.60s,
+16 took 0.70s, and 1 took 1.22s. Memory does not follow the file size, because each worker
+holds one 1 MiB buffer, so the whole run stays near 17 MB whatever it is destroying.
+Measure your own disk before you change it.
 
 The log holds one line per target and names the full path of each, so it is a manifest of
 what you destroyed and where it lived. Choose a path you are willing to leave that at. It
 is mode `0600`, readable only by you, whether the run creates it or appends to a file
 already there. A path that is a symlink, or that cannot be opened, stops the run before it
-destroys anything.
+destroys anything. A path inside any selected target is refused, because the run would
+otherwise destroy its own manifest. A dry run never creates or opens the log.
 
 ## Known limitations
 
@@ -302,7 +320,8 @@ These are properties of the current implementation. Each one is reproducible.
   directory. Name a path on the command line to reach anything higher.
 - **The selector reads a large directory in one go.** A directory of 10,000 entries took
   117ms to list on an NVMe disk, because every entry is checked against the protected paths
-  as it is read. Nothing is drawn until that finishes.
+  as it is read. The read runs as a Bubble Tea command, so the interface renders a loading
+  state and quit remains responsive while it finishes.
 - **The protected path guard resolves symlinks, but not mount points.** It reads the path
   you typed, and the same path with every symlink above the last component resolved,
   against a list and against your home directory. A bind mount of a system path inside
@@ -346,8 +365,7 @@ just e2e      # generate a dummy tree, destroy it, and check what survived
 ├── tui/picker.go           # The selector a run with no arguments opens.
 ├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
 ├── utils/gen-dummy-df.py   # Generates a dummy tree for `just e2e`.
-├── justfile                # Every task.
-└── AGENTS.md               # Contributor guidelines.
+└── justfile                # Every task.
 ```
 
 The terminal interface follows the house terminal idiom: ANSI_Shadow block art, a `[ ]`
