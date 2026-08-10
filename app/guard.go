@@ -9,16 +9,6 @@ import (
 	"strings"
 )
 
-// systemPaths are the directories an operating system installs itself into.
-// Naming one is never what the caller meant, and the list costs nothing to a
-// caller who meant something narrower.
-var systemPaths = []string{
-	"/bin", "/boot", "/cores", "/dev", "/etc", "/home", "/lib", "/lib32",
-	"/lib64", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys",
-	"/usr", "/var",
-	"/Applications", "/Library", "/System", "/Users", "/Volumes", "/private",
-}
-
 // A test drives the guard through this rather than naming the real home.
 var currentUser = user.Current
 
@@ -29,7 +19,7 @@ var currentUser = user.Current
 // answer the environment cannot move. The environment still counts as well,
 // because a caller who sets HOME on purpose means the directory they named.
 func protectedPaths() []string {
-	paths := slices.Clone(systemPaths)
+	paths := systemPaths()
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		paths = append(paths, filepath.Clean(home))
 	}
