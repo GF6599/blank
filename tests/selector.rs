@@ -19,15 +19,24 @@ const LOVE: Color = Color::Rgb(0xeb, 0x6f, 0x92);
 fn open(dir: &Path) -> Selector {
     let (mut selector, load) = Selector::open(dir, Arc::new(Guard::for_host()));
     selector.loaded(load.run());
+    settle(&mut selector);
     selector
 }
 
-/// Presses a key, and finishes any load it starts.
+/// Runs every preview and total the selector asks for, as the screen runs them on threads.
+fn settle(selector: &mut Selector) {
+    for work in selector.work() {
+        selector.finished(work.run());
+    }
+}
+
+/// Presses a key, and finishes any load and any work it starts.
 fn press(selector: &mut Selector, code: KeyCode) -> Pick {
     let pick = selector.key(KeyEvent::new(code, KeyModifiers::NONE));
     if let Pick::Load(load) = &pick {
         selector.loaded(load.run());
     }
+    settle(selector);
     pick
 }
 
@@ -656,22 +665,28 @@ fn a_selector_matches_its_snapshot_at_a_phone_width() {
     let screen = render(&mut selector, 40, 20);
 
     // Then:
-    let mut expected = vec![
+    let expected = [
         "",
         "  blank",
         "",
         "  2/4  1 marked               [q] quit",
+        "  marked: 1 file, 7 bytes",
         "",
         "TITLE",
-    ];
-    expected.extend([
         "  │     archive/                     │",
         "  │ [   keys/                     ]  │",
         "  │   * notes.txt                    │",
         "  │     report-final-v2.pdf          │",
-    ]);
-    expected.extend(["  │                                  │"; 9]);
-    expected.push("  └──────────────────────────────────┘");
+        "  │                                  │",
+        "  └──────────────────────────────────┘",
+        "  ┌─ preview ────────────────────────┐",
+        "  │ marking it destroys              │",
+        "  │ 1 file                           │",
+        "  │ 1 directory                      │",
+        "  │ 7 bytes                          │",
+        "  │                                  │",
+        "  └──────────────────────────────────┘",
+    ];
     assert_snapshot(&screen, &expected);
 }
 
@@ -692,7 +707,7 @@ fn a_selector_matches_its_snapshot_at_a_desktop_width() {
     let screen = render(&mut selector, 100, 30);
 
     // Then:
-    let mut expected = vec![
+    let expected = [
         "",
         "  ██████╗ ██╗      █████╗ ███╗   ██╗██╗  ██╗",
         "  ██╔══██╗██║     ██╔══██╗████╗  ██║██║ ██╔╝",
@@ -702,17 +717,254 @@ fn a_selector_matches_its_snapshot_at_a_desktop_width() {
         "  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝",
         "",
         "  2/4  1 marked                               [space] mark  [enter] done  [q] quit",
+        "  marked: 1 file, 7 bytes",
         "",
         "TITLE",
-        "  │     archive/                                                                 │",
-        "  │ [   keys/                                                                 ]  │",
-        "  │   * notes.txt                                                                │",
-        "  │     report-final-v2.pdf                                                      │",
+        "  │     archive/                         │ │ marking it destroys                 │",
+        "  │ [   keys/                         ]  │ │ 1 file                              │",
+        "  │   * notes.txt                        │ │ 1 directory                         │",
+        "  │     report-final-v2.pdf              │ │ 7 bytes                             │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  │                                      │ │                                     │",
+        "  └──────────────────────────────────────┘ └─────────────────────────────────────┘",
     ];
-    expected.extend(
-        ["  │                                                                              │"; 14],
-    );
-    expected
-        .push("  └──────────────────────────────────────────────────────────────────────────────┘");
     assert_snapshot(&screen, &expected);
+}
+
+/// The preview pane shows the head of the file under the cursor, and follows the cursor.
+///
+/// Given: a directory of two text files.
+/// When: the selector opens, and the cursor moves to the second file.
+/// Then: the pane first shows the lines of the first file, and then those of the second only.
+///
+/// Why it matters: the head of a file is what tells the operator which file a mark lands on,
+/// and a pane that lags the cursor shows them the wrong one.
+#[test]
+fn the_preview_shows_the_file_under_the_cursor() {
+    // Given:
+    let root = tree(&[]);
+    fs::write(root.path().join("a.txt"), "alpha contents\n").unwrap();
+    fs::write(root.path().join("b.txt"), "bravo contents\n").unwrap();
+
+    // When:
+    let mut selector = open(root.path());
+    let first = screen_text(&mut selector);
+    press(&mut selector, KeyCode::Down);
+    let second = screen_text(&mut selector);
+
+    // Then:
+    assert!(first.contains("alpha contents"), "{first}");
+    assert!(
+        second.contains("bravo contents") && !second.contains("alpha contents"),
+        "{second}"
+    );
+}
+
+/// A binary file previews as a hex dump with its printable bytes beside it.
+///
+/// Given: a file that starts with an executable header.
+/// When: the selector shows it.
+/// Then: the pane holds the header bytes in hex and the printable text `.ELF`.
+///
+/// Why it matters: binary contents drawn as text scramble the pane, and the bytes are what
+/// identify the file.
+#[test]
+fn a_binary_file_previews_as_a_hex_dump() {
+    // Given:
+    let root = tree(&[]);
+    let mut contents = vec![0x7f, b'E', b'L', b'F'];
+    contents.extend([0u8; 60]);
+    fs::write(root.path().join("program"), contents).unwrap();
+
+    // When:
+    let mut selector = open(root.path());
+
+    // Then:
+    let text = screen_text(&mut selector);
+    assert!(text.contains("7f 45 4c 46"), "{text}");
+    assert!(text.contains(".ELF"), "{text}");
+}
+
+/// The marked set is counted off the selector, and the header says so until the count arrives.
+///
+/// Given: a directory holding two files of 10 and 20 bytes.
+/// When: the operator marks it, before and after the count finishes.
+/// Then: the header first says it is counting, and then reads 2 files, 1 directory and 30 bytes.
+///
+/// Why it matters: marking a large directory means walking it, and a selector that walked it on
+/// its own thread would freeze until the walk ended, with no way to leave.
+#[test]
+fn the_marked_set_is_counted_off_the_selector() {
+    // Given:
+    let root = tree(&["project/a.txt", "project/sub/b.txt"]);
+    fs::write(root.path().join("project").join("a.txt"), vec![b'x'; 10]).unwrap();
+    fs::write(
+        root.path().join("project").join("sub").join("b.txt"),
+        vec![b'x'; 20],
+    )
+    .unwrap();
+    let mut selector = open(root.path());
+
+    // When:
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let work = selector.work();
+    let pending = screen_text(&mut selector);
+    for work in work {
+        selector.finished(work.run());
+    }
+    let counted = screen_text(&mut selector);
+
+    // Then:
+    assert!(pending.contains("counting the marked set"), "{pending}");
+    assert!(
+        counted.contains("marked: 2 files, 2 directories, 30 bytes"),
+        "{counted}"
+    );
+}
+
+/// A total that a newer mark replaced is stopped and never shown.
+///
+/// Given: a total asked for after one mark, and another after a second mark.
+/// When: the newer total finishes, and then the older one runs.
+/// Then: the older one stops without a result, and the header shows the total of both marks.
+///
+/// Why it matters: an older total that lands last shows a set the operator already changed,
+/// and a walk nobody will read holds a thread for the size of the tree.
+#[test]
+fn a_total_that_a_newer_mark_replaced_is_never_shown() {
+    // Given:
+    let root = tree(&["a.txt", "b.txt"]);
+    let mut selector = open(root.path());
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let older = selector.work();
+    selector.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let newer = selector.work();
+
+    // When:
+    for work in newer {
+        selector.finished(work.run());
+    }
+    let late: Vec<_> = older.iter().map(|work| work.run()).collect();
+    let stopped = late.iter().any(|finished| {
+        matches!(
+            finished,
+            blank::selector::Finished::Totals { totals: None, .. }
+        )
+    });
+    for finished in late {
+        selector.finished(finished);
+    }
+
+    // Then:
+    assert!(stopped, "the older total ran to its end");
+    let text = screen_text(&mut selector);
+    assert!(text.contains("marked: 2 files, 14 bytes"), "{text}");
+}
+
+/// Closing the selector stops the walks it started.
+///
+/// Given: a marked directory whose total was asked for and has not run.
+/// When: the selector is closed.
+/// Then: the total stops without a result.
+///
+/// Why it matters: the run that follows needs the disk, and a walk for a pane nobody sees
+/// anymore competes with it for as long as the tree is large.
+#[test]
+fn closing_the_selector_stops_the_walks_it_started() {
+    // Given:
+    let root = tree(&["project/a.txt"]);
+    let mut selector = open(root.path());
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let work = selector.work();
+
+    // When:
+    drop(selector);
+
+    // Then:
+    for work in work {
+        if let finished @ blank::selector::Finished::Totals { .. } = work.run() {
+            assert!(matches!(
+                finished,
+                blank::selector::Finished::Totals { totals: None, .. }
+            ));
+        }
+    }
+}
+
+/// A total that finished before a newer mark, and arrives after it, is ignored.
+///
+/// Given: a total that ran to its end after one mark, and a second mark made before its result
+/// arrived.
+/// When: the older result arrives.
+/// Then: the header still says it is counting.
+///
+/// Why it matters: a result already on its way cannot be stopped, and taking it would show the
+/// totals of a set the operator already changed.
+#[test]
+fn a_total_that_arrives_after_a_newer_mark_is_ignored() {
+    // Given:
+    let root = tree(&["a.txt", "b.txt"]);
+    let mut selector = open(root.path());
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let arrived: Vec<_> = selector.work().iter().map(|work| work.run()).collect();
+    selector.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    selector.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    let _newer = selector.work();
+
+    // When:
+    for finished in arrived {
+        selector.finished(finished);
+    }
+
+    // Then:
+    let text = screen_text(&mut selector);
+    assert!(text.contains("counting the marked set"), "{text}");
+}
+
+/// The totals row keeps whole numbers on a narrow screen.
+///
+/// Given: a marked directory of 300000 bytes in two files.
+/// When: the selector is drawn at every width from 12 to 90 columns.
+/// Then: wherever a size shows it is whole, and from 20 columns up the size always shows.
+///
+/// Why it matters: a size cut to `293.` reads as 293 bytes, three orders of magnitude short of
+/// what the mark destroys.
+#[test]
+fn the_totals_row_keeps_whole_numbers_on_a_narrow_screen() {
+    // Given:
+    let root = tree(&["project/sub/a.txt"]);
+    fs::write(
+        root.path().join("project").join("big.bin"),
+        vec![0; 300_000],
+    )
+    .unwrap();
+    let mut selector = open(root.path());
+    press(&mut selector, KeyCode::Char(' '));
+
+    for width in 12..=90 {
+        // When:
+        let screen = render(&mut selector, width, 30);
+
+        // Then:
+        let row = lines(&screen).into_iter().find(|line| line.contains("293"));
+        if let Some(row) = &row {
+            assert!(row.contains("293.0 KiB"), "{width}: {row}");
+        }
+        assert!(
+            width < 20 || row.is_some(),
+            "{width}: no size on the screen"
+        );
+    }
 }

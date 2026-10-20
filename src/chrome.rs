@@ -127,8 +127,53 @@ pub(crate) fn draw_panel<'a>(
     total: usize,
     first: usize,
 ) {
-    if area.height < 3 || area.width < 2 {
+    let Some(inner) = draw_frame(buffer, area, title) else {
         return;
+    };
+    let row_width = inner.width.saturating_sub(SCROLLBAR_CELLS + ROW_INDENT);
+    let thumb = scrollbar(usize::from(inner.height), total, first);
+    let mut lines = lines.into_iter();
+    for offset in 0..inner.height {
+        let y = inner.y + offset;
+        if let Some(line) = lines.next() {
+            draw_line(buffer, inner.x + ROW_INDENT, y, row_width, &line);
+        }
+        if thumb.contains(&usize::from(offset)) && inner.width >= SCROLLBAR_CELLS {
+            let x = inner.right() - 1;
+            put(buffer, x, y, SCROLL_THUMB, Style::new().fg(MUTED));
+        }
+    }
+}
+
+/// Draws a frame with `title` cut into its top rule, and `lines` inside it from the top, each
+/// cut to the width of the frame.
+pub(crate) fn draw_text_panel(
+    buffer: &mut Buffer,
+    area: Rect,
+    title: &str,
+    lines: &[(String, Color)],
+) {
+    let Some(inner) = draw_frame(buffer, area, title) else {
+        return;
+    };
+    let width = inner.width.saturating_sub(ROW_INDENT * 2);
+    for (offset, (text, color)) in (0..inner.height).zip(lines) {
+        let shown = clamp_head(text, width);
+        put(
+            buffer,
+            inner.x + ROW_INDENT,
+            inner.y + offset,
+            shown,
+            Style::new().fg(*color),
+        );
+    }
+}
+
+/// Draws the rules of a frame, and returns the area inside them, or nothing when the frame has
+/// no room for a row.
+fn draw_frame(buffer: &mut Buffer, area: Rect, title: &str) -> Option<Rect> {
+    if area.height < 3 || area.width < 2 {
+        return None;
     }
     let border_style = Style::new().fg(HIGHLIGHT_MED);
     put(
@@ -138,31 +183,25 @@ pub(crate) fn draw_panel<'a>(
         frame_top(area.width, title),
         border_style,
     );
-    let body = area.height - 2;
-    let inner = area.width - 2;
-    let row_width = inner.saturating_sub(SCROLLBAR_CELLS + ROW_INDENT);
-    let thumb = scrollbar(usize::from(body), total, first);
-    let mut lines = lines.into_iter();
-    for offset in 0..body {
-        let y = area.y + 1 + offset;
+    let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+    for y in inner.y..inner.bottom() {
         put(buffer, area.x, y, BORDER.vertical_left, border_style);
-        let right = area.right() - 1;
-        put(buffer, right, y, BORDER.vertical_right, border_style);
-        if let Some(line) = lines.next() {
-            draw_line(buffer, area.x + 1 + ROW_INDENT, y, row_width, &line);
-        }
-        if thumb.contains(&usize::from(offset)) && inner >= SCROLLBAR_CELLS {
-            let x = area.x + inner;
-            put(buffer, x, y, SCROLL_THUMB, Style::new().fg(MUTED));
-        }
+        put(
+            buffer,
+            area.right() - 1,
+            y,
+            BORDER.vertical_right,
+            border_style,
+        );
     }
     let bottom = format!(
         "{}{}{}",
         BORDER.bottom_left,
-        BORDER.horizontal_bottom.repeat(usize::from(inner)),
+        BORDER.horizontal_bottom.repeat(usize::from(inner.width)),
         BORDER.bottom_right
     );
     put(buffer, area.x, area.bottom() - 1, bottom, border_style);
+    Some(inner)
 }
 
 /// The bracket cells and the state cell are drawn on every row and left blank when they have
@@ -236,6 +275,33 @@ pub(crate) fn clamp_tail(text: &str, width: u16, prefix: &str) -> String {
         kept.push(character);
     }
     prefix.chars().chain(kept.into_iter().rev()).collect()
+}
+
+/// The start of a text, because a line of a file reads from its beginning.
+pub(crate) fn clamp_head(text: &str, width: u16) -> String {
+    let mut used = 0;
+    text.chars()
+        .take_while(|character| {
+            used += character.width().unwrap_or(0);
+            used <= usize::from(width)
+        })
+        .collect()
+}
+
+/// Breaks `text` at spaces into lines of at most `width` cells. A word longer than the width
+/// keeps a line of its own and is cut where it is drawn.
+pub(crate) fn wrap(text: &str, width: u16) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split(' ') {
+        match lines.last_mut() {
+            Some(line) if cells(line) + 1 + cells(word) <= width => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
 }
 
 pub(crate) fn cells(text: &str) -> u16 {

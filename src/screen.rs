@@ -17,7 +17,7 @@ use ratatui::crossterm::terminal::{
 use crate::engine::{Options, Stage, Update, destroy};
 use crate::guard::Guard;
 use crate::plan::{Incomplete, Plan};
-use crate::selector::{Pick, Selector};
+use crate::selector::{Finished, LoadRequest, Loaded, Pick, Selector, Work};
 use crate::view::{Action, Outcome, RunView};
 
 /// How long the screen waits for a key before it draws again. It sets the pace of the busy
@@ -199,16 +199,33 @@ pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
     let mut screen = FullScreen::enter()?;
     let (mut selector, first) = Selector::open(start, guard);
     let (sender, receiver) = mpsc::channel();
-    let read = |load: crate::selector::LoadRequest| {
+    let read = {
+        let sender = sender.clone();
+        move |load: LoadRequest| {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(Read::Loaded(load.run()));
+            });
+        }
+    };
+    // A newer request stops the walk of the one before it, and closing the selector stops
+    // both, so a walk nobody will read ends at its next entry.
+    let run = move |work: Work| {
         let sender = sender.clone();
         thread::spawn(move || {
-            let _ = sender.send(load.run());
+            let _ = sender.send(Read::Finished(work.run()));
         });
     };
     read(first);
     loop {
-        for loaded in receiver.try_iter() {
-            selector.loaded(loaded);
+        for done in receiver.try_iter() {
+            match done {
+                Read::Loaded(loaded) => selector.loaded(loaded),
+                Read::Finished(finished) => selector.finished(finished),
+            }
+        }
+        for work in selector.work() {
+            run(work);
         }
         screen.0.draw(|frame| selector.draw(frame))?;
         if !event::poll(FRAME)? {
@@ -227,4 +244,10 @@ pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
             Pick::Quit => return Ok(Vec::new()),
         }
     }
+}
+
+/// What a reading thread hands back to the selector.
+enum Read {
+    Loaded(Loaded),
+    Finished(Finished),
 }
