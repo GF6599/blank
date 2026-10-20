@@ -1,117 +1,10 @@
 mod common;
 
-use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
+use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
 
+use common::terminal::{Respond, show};
 use common::text;
-use nix::pty::{Winsize, openpty};
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
-
-/// The sequence that leaves the alternate screen. Everything after it stays in the scrollback.
-const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
-
-struct Shown {
-    /// What the terminal received after the interface closed.
-    after: String,
-    code: i32,
-}
-
-/// How the test ends the screen once `waits_for` has been drawn.
-enum Respond {
-    PressQ,
-    /// An interrupt from outside the terminal, which raw mode does not turn into a key.
-    Interrupt,
-}
-
-/// Runs blank on a pseudo-terminal of 80 by 24, responds once `waits_for` has been drawn, and
-/// returns what was printed after the alternate screen closed. A frame sends only the cells
-/// that changed, so `waits_for` is a word the screen draws new, not a whole line.
-fn show(args: &[&str], waits_for: &str, respond: Respond) -> Shown {
-    let size = Winsize {
-        ws_row: 24,
-        ws_col: 80,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    let pty = openpty(Some(&size), None).unwrap();
-    let terminal = |fd: &OwnedFd| Stdio::from(fd.try_clone().unwrap());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_blank"))
-        .args(args)
-        .stdin(terminal(&pty.slave))
-        .stdout(terminal(&pty.slave))
-        .stderr(terminal(&pty.slave))
-        .spawn()
-        .unwrap();
-    drop(pty.slave);
-    let mut writer = File::from(pty.master.try_clone().unwrap());
-    let mut reader = File::from(pty.master);
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut chunk = [0; 4096];
-        // The read fails once the child closes the last copy of the terminal.
-        while let Ok(count) = reader.read(&mut chunk) {
-            if count == 0 || sender.send(chunk[..count].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
-    let mut seen = Vec::new();
-    // Every frame hides the cursor again, so the screen never falls silent, and only a deadline
-    // for the whole wait ends it.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !String::from_utf8_lossy(&seen).contains(waits_for) {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let chunk = receiver
-            .recv_timeout(left)
-            .unwrap_or_else(|_| panic!("{waits_for:?} never appeared"));
-        seen.extend(chunk);
-    }
-    match respond {
-        Respond::PressQ => writer.write_all(b"q").unwrap(),
-        Respond::Interrupt => {
-            let pid = Pid::from_raw(child.id() as i32);
-            kill(pid, Signal::SIGINT).unwrap();
-        }
-    }
-    let mut waited = 0;
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        waited += 1;
-        if waited > 100 {
-            child.kill().unwrap();
-            while let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(200)) {
-                seen.extend(chunk);
-            }
-            panic!(
-                "blank did not exit after q:\n{:?}",
-                String::from_utf8_lossy(&seen)
-            );
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    while let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(500)) {
-        seen.extend(chunk);
-    }
-    let seen = String::from_utf8_lossy(&seen).into_owned();
-    let after = seen
-        .rsplit_once(LEAVE_ALTERNATE_SCREEN)
-        .unwrap_or_else(|| panic!("the interface never left the alternate screen:\n{seen:?}"))
-        .1
-        .to_owned();
-    Shown {
-        after,
-        code: status.code().expect("blank exits rather than being killed"),
-    }
-}
 
 /// A run on a terminal is drawn full screen, and its verdict is printed once the screen closes.
 ///
@@ -129,7 +22,11 @@ fn a_complete_run_prints_its_verdict_after_the_screen_closes() {
     fs::write(root.path().join("secret.txt"), "payload").unwrap();
 
     // When:
-    let shown = show(&["--yes", text(root.path())], "complete", Respond::PressQ);
+    let shown = show(
+        &["--yes", text(root.path())],
+        "complete",
+        Respond::Keys("q"),
+    );
 
     // Then:
     assert_eq!(shown.code, 0, "{}", shown.after);
@@ -161,7 +58,7 @@ fn a_failed_run_prints_its_verdict_and_its_survivor_after_the_screen_closes() {
     let shown = show(
         &["--yes", text(root.path()), text(Path::new(&missing))],
         "failed",
-        Respond::PressQ,
+        Respond::Keys("q"),
     );
 
     // Then:
@@ -199,7 +96,7 @@ fn q_during_a_run_stops_it_and_reports_it_cancelled() {
     let shown = show(
         &["--yes", "--jobs", "2", "--passes", "50", text(root.path())],
         "file-",
-        Respond::PressQ,
+        Respond::Keys("q"),
     );
 
     // Then:
