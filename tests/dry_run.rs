@@ -235,3 +235,33 @@ fn a_closed_pipe_ends_the_dry_run_quietly() {
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     assert_eq!(output.status.code(), Some(141));
 }
+
+/// Two different names never display the same.
+///
+/// Given: a file named with the text `\x07` and a file named with a real bell character.
+/// When: the tree is dry run.
+/// Then: the backslash of the first is doubled, so the two lines differ.
+///
+/// Why it matters: without escaping the backslash, a name can spell out the escape of another
+/// name, and the operator cannot tell which of the two the run will destroy.
+#[test]
+fn a_backslash_in_a_name_is_escaped_too() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("bell\\x07.txt"), "").unwrap();
+    fs::write(root.path().join("bell\x07.txt"), "").unwrap();
+
+    // When:
+    let outcome = run(&["--dry-run", text(root.path())]);
+
+    // Then:
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let lines: Vec<&str> = outcome.stdout.lines().take(2).collect();
+    assert_eq!(
+        lines,
+        [
+            format!("Overwriting {}/bell\\x07.txt", text(root.path())),
+            format!("Overwriting {}/bell\\\\x07.txt", text(root.path())),
+        ]
+    );
+}

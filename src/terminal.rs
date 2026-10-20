@@ -28,10 +28,15 @@ fn invisible(c: char) -> bool {
 /// by whoever destroys it. A control character inside one can retitle the window, move the
 /// cursor, or hide the rest of the line, and an invisible or reordering character can make one
 /// name display as another. A control character is below U+0100, so two hex digits always fit.
+///
+/// The backslash is escaped too, so a name that spells out the escape of another name still
+/// displays differently from it.
 pub fn escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for c in text.chars() {
-        if control(c) {
+        if c == '\\' {
+            escaped.push_str("\\\\");
+        } else if control(c) {
             escaped.push_str(&format!("\\x{:02x}", u32::from(c)));
         } else if invisible(c) {
             escaped.push_str(&format!("\\u{{{:x}}}", u32::from(c)));
