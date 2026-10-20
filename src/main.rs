@@ -33,14 +33,26 @@ struct Cli {
     yes: bool,
 }
 
+/// The code a shell reports for a writer that a closed pipe stopped.
+const CLOSED_PIPE: u8 = 141;
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
+        // A reader such as `head` closed the pipe once it had what it asked for, so there is
+        // nothing to report. Rust ignores SIGPIPE, which would otherwise end the process here.
+        Err(error) if closed_pipe(error.as_ref()) => ExitCode::from(CLOSED_PIPE),
         Err(error) => {
             eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn closed_pipe(error: &(dyn Error + 'static)) -> bool {
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {

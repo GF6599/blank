@@ -192,3 +192,46 @@ fn invisible_and_reordering_characters_in_a_name_are_escaped() {
         );
     }
 }
+
+/// A reader that stops early, as `head` does, gets no error message.
+///
+/// Given: a tree with more targets than a pipe buffer holds.
+/// When: the dry run is read for one line and the pipe is closed.
+/// Then: the run prints nothing on standard error and exits with 141, the code a shell reports
+/// for a writer stopped by a closed pipe.
+///
+/// Why it matters: paging a long dry run through `head` or `less` is how an operator reads it,
+/// and an error line there reads as a fault in the plan.
+#[test]
+fn a_closed_pipe_ends_the_dry_run_quietly() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    for n in 0..4000 {
+        fs::write(
+            root.path().join(format!("file-with-a-longer-name-{n}.txt")),
+            "",
+        )
+        .unwrap();
+    }
+
+    // When:
+    let mut child = Command::new(env!("CARGO_BIN_EXE_blank"))
+        .args(["--dry-run", text(root.path())])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    // Then:
+    assert!(first.starts_with("Overwriting "), "{first}");
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    assert_eq!(output.status.code(), Some(141));
+}
