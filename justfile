@@ -14,8 +14,6 @@ COMMIT  := `git rev-parse --short HEAD 2>/dev/null || echo none`
 DATE    := `date -u +%Y-%m-%dT%H:%M:%SZ`
 
 LDFLAGS := "-s -w"
-RELEASE_OS := "linux darwin"
-RELEASE_ARCH := "amd64 arm64"
 
 # Show available recipes
 default:
@@ -106,33 +104,10 @@ install: build
 	@command -v codesign >/dev/null && codesign -f -s - {{INSTALL_DIR}}/{{BINARY}} || true
 	@echo "Installed {{BINARY}} to {{INSTALL_DIR}}/{{BINARY}}"
 
-# Build one release target into dist/, e.g. `just release darwin arm64`
+# Render a full release into dist/ and publish none of it
 [group('deploy')]
-release goos goarch:
-	mkdir -p {{DIST_DIR}}
-	CGO_ENABLED=0 GOOS={{goos}} GOARCH={{goarch}} go build -mod=readonly -trimpath \
-		-ldflags "{{LDFLAGS}}" \
-		-o {{DIST_DIR}}/{{BINARY}}-{{goos}}-{{goarch}}{{ if goos == "windows" { ".exe" } else { "" } }} .
-	@echo "Built {{DIST_DIR}}/{{BINARY}}-{{goos}}-{{goarch}}{{ if goos == "windows" { ".exe" } else { "" } }}"
-
-# Build every release target. CI calls this rather than repeating the matrix.
-[group('deploy')]
-release-all:
-	for goos in {{RELEASE_OS}}; do \
-		for goarch in {{RELEASE_ARCH}}; do \
-			{{just_executable()}} release "$goos" "$goarch"; \
-		done; \
-	done
-
-# Write SHA256SUMS over the release artifacts in dist/
-[group('deploy')]
-checksums:
-	cd {{DIST_DIR}} && if command -v sha256sum >/dev/null; then \
-		sha256sum {{BINARY}}-* > SHA256SUMS; \
-	else \
-		shasum -a 256 {{BINARY}}-* > SHA256SUMS; \
-	fi
-	@echo "Wrote {{DIST_DIR}}/SHA256SUMS"
+release-dry-run:
+	goreleaser release --snapshot --clean --skip=publish
 
 # Remove build output and the local go cache
 [group('deploy')]

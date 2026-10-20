@@ -1,0 +1,57 @@
+version: 2
+
+builds:
+  - main: .
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+homebrew_casks:
+  - name: blank
+    repository:
+      owner: GF6599
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/GF6599/blank
+    description: Destroy files and directories so that the contents cannot be recovered
+    license: MIT
+    # Homebrew quarantines what a cask downloads, and macOS reports a quarantined
+    # binary that nobody notarized as damaged rather than running it. Notarizing
+    # needs a paid Apple developer account, so the cask clears the attribute.
+    # GoReleaser renders `hooks.post.install` as `postflight`, which Homebrew 6.0
+    # deprecates, so the stanza goes in through `custom_block` instead. GoReleaser
+    # templates the rendered cask one more time. The escape therefore leaves a
+    # literal {{staged_path}} for Homebrew to expand at install time.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/blank"]
+        end
+      end
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

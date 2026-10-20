@@ -2,43 +2,46 @@ name: Release
 
 on:
   push:
-    tags: ["🚀release.*"]
+    tags:
+      - "v*"
+  # A dispatch run renders every archive, checksum and the cask, then publishes
+  # nothing, so an action or toolchain upgrade is proven here instead of on a
+  # live tag.
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: check
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
+      # A tag moves, so a compromised maintainer account can repoint one and run
+      # new code in a job holding contents: write and a Homebrew tap token.
+      # Dependabot raises the trailing version comments as pull requests.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
-      - name: Validate tag format
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          # A dispatch run renders the archives, checksums and cask that a tag
+          # would publish. `build` would compile the binaries and render none of
+          # them, which is where a template error actually hides.
+          args: ${{ github.event_name == 'workflow_dispatch' && 'release --snapshot --clean --skip=publish' || 'release --clean' }}
         env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if ! [[ "$TAG" =~ ^🚀release\.[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]; then
-            echo "Tag '$TAG' does not match 🚀release.yyyy.mm.dd"
-            exit 1
-          fi
-
-      # A tag can point at a commit CI never ran on, and a release cannot be
-      # quietly replaced the way a container tag can.
-      - run: just check
-
-      # The build matrix lives in the justfile, so a release builds what a
-      # developer builds. gh is preinstalled, which keeps the highest-privilege
-      # step free of any third-party action.
-      - run: just release-all
-      - run: just checksums
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --generate-notes dist/blank-* dist/SHA256SUMS
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --skip=publish never reads the tap credential, so a dispatch run
+          # never needs it and never receives it.
+          HOMEBREW_TAP_TOKEN: ${{ github.event_name == 'push' && secrets.HOMEBREW_TAP_TOKEN || '' }}

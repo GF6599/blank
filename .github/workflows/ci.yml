@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Release calls this so a tag is held to the checks a pull request runs, and
+  # the two definitions of a passing build cannot drift apart.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
