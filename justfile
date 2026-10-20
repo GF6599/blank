@@ -72,21 +72,27 @@ check: fmt-check lint test-race
 	cargo build --locked
 
 # The tree holds a directory nobody can list, so a working run reports it,
-# leaves it alone, and exits non-zero.
+# leaves it alone, and exits non-zero. Each build gets a fresh tree while the
+# Go build is still the reference.
 
-# Generate a dummy tree and run end to end
+# Generate a dummy tree and run each build end to end
 [group('dev')]
 e2e:
-	tmp_dir="$(mktemp -d)"; log_file="$(mktemp)"; \
-	trap 'chmod -R u+rwX "$tmp_dir" 2>/dev/null || true; rm -rf "$tmp_dir" "$log_file"' EXIT; \
-	python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null; \
-	if go run . --no-ui --yes "$tmp_dir" >"$log_file" 2>&1; then \
-		cat "$log_file"; echo "e2e: exited 0 with a directory it cannot have read"; exit 1; \
-	fi; \
-	grep -q no_list_dir "$log_file" || { cat "$log_file"; echo "e2e: did not name the directory it could not read"; exit 1; }; \
-	test -d "$tmp_dir/no_list_dir" || { echo "e2e: removed the directory it could not read"; exit 1; }; \
-	test ! -e "$tmp_dir/no_read.txt" || { echo "e2e: left the unreadable file on disk"; exit 1; }; \
-	echo "e2e: the tree is gone, and the run named the directory it could not read"
+	#!/usr/bin/env bash
+	set -euo pipefail
+	for build in "go run . --no-ui" "cargo run --quiet --"; do
+		tmp_dir="$(mktemp -d)"; log_file="$(mktemp)"
+		python3 utils/gen-dummy-df.py --root "$tmp_dir" --force --many-files 10 --large-file-size 1 --depth 2 >/dev/null
+		status=0; $build --yes "$tmp_dir" >"$log_file" 2>&1 || status=$?
+		verdict="the tree is gone, and the run named the directory it could not read"
+		if [ "$status" -eq 0 ]; then verdict="exited 0 with a directory it cannot have read"
+		elif ! grep -q no_list_dir "$log_file"; then verdict="did not name the directory it could not read"
+		elif [ ! -d "$tmp_dir/no_list_dir" ]; then verdict="removed the directory it could not read"
+		elif [ -e "$tmp_dir/no_read.txt" ]; then verdict="left the unreadable file on disk"; fi
+		chmod -R u+rwX "$tmp_dir"; rm -rf "$tmp_dir"
+		echo "e2e ($build): $verdict"
+		case "$verdict" in "the tree is gone"*) rm -f "$log_file" ;; *) cat "$log_file"; rm -f "$log_file"; exit 1 ;; esac
+	done
 
 # Tidy and verify go modules. Rewrites go.mod, so no other recipe depends on it.
 [group('dev')]
