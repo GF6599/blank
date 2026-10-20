@@ -50,8 +50,12 @@ pub(crate) fn overwrite(
         open_for_overwrite(parent, name, planned).map_err(TargetError::intact)?;
     let mut buf = vec![0; COVER_CHUNK.min(usize::try_from(size).unwrap_or(COVER_CHUNK))];
     let mut covered = 0;
+    // An empty file has no contents to cover, and a flush to the device costs milliseconds
+    // on macOS, which a tree of many empty files multiplies into minutes.
+    let covers = if size == 0 { 0 } else { passes as usize + 1 };
     let fills = std::iter::repeat_n(random_fill as Fill, passes as usize)
-        .chain(std::iter::once(zero_fill as Fill));
+        .chain(std::iter::once(zero_fill as Fill))
+        .take(covers);
     for (pass, fill) in fills.enumerate() {
         cover(&mut file, size, fill, &mut buf, &mut covered)
             .map_err(|error| TargetError::after(covered, format!("cover {}: {error}", pass + 1)))?;
