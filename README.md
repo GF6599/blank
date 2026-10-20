@@ -337,6 +337,12 @@ These are properties of the current implementation. Each one is reproducible.
   117ms to list on an NVMe disk, because every entry is checked against the protected paths
   as it is read. The read runs as a Bubble Tea command, so the interface renders a loading
   state and quit remains responsive while it finishes.
+- **A name is escaped, but a lookalike letter is not caught.** Every control character,
+  every default ignorable code point, every format character, and the line and paragraph
+  separators display as their code points, read from the Unicode data, so an invisible or
+  reordering character cannot make one name pass for another. An emoji with a variation
+  selector therefore shows the selector as `\u{fe0f}`. A letter from another script that
+  looks like a Latin one, such as the Cyrillic `а`, displays as itself.
 - **The protected path guard resolves symlinks, but not mount points.** It reads the path
   you typed, and the same path with every symlink above the last component resolved,
   against a list and against your home directory. A bind mount of a system path inside

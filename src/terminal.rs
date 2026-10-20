@@ -1,27 +1,24 @@
 use std::path::Path;
 
+use icu_properties::props::{DefaultIgnorableCodePoint, GeneralCategory};
+use icu_properties::{CodePointMapData, CodePointSetData};
+
 /// The C0 controls, DEL, and the C1 range.
 fn control(c: char) -> bool {
     c < '\u{20}' || c == '\u{7f}' || ('\u{80}'..='\u{9f}').contains(&c)
 }
 
-/// The format characters that print nothing or reorder what follows: the soft hyphen, the
-/// zero-width characters, the line and paragraph separators, the bidirectional embeddings,
-/// overrides and isolates, the byte order mark, and the tag characters.
+/// The characters that print nothing or reorder what follows, read from the Unicode data so the
+/// set has one owner: every default ignorable code point, the format category, and the line and
+/// paragraph separators, which belong to neither but end a line where the name does not.
 fn invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{ad}'
-            | '\u{61c}'
-            | '\u{180e}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206f}'
-            | '\u{feff}'
-            | '\u{fff9}'..='\u{fffb}'
-            | '\u{e0000}'..='\u{e007f}'
-    )
+    CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(c)
+        || matches!(
+            CodePointMapData::<GeneralCategory>::new().get(c),
+            GeneralCategory::Format
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+        )
 }
 
 /// Makes text safe to write to a terminal. A file name is chosen by whoever wrote the file, not
