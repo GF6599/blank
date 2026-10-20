@@ -6,5 +6,6 @@ mod overwrite;
 pub mod plan;
 pub mod question;
 pub mod screen;
+pub mod selector;
 pub mod terminal;
 pub mod view;

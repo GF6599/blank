@@ -1,5 +1,6 @@
 use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
@@ -14,7 +15,9 @@ use ratatui::crossterm::terminal::{
 };
 
 use crate::engine::{Options, Stage, Update, destroy};
+use crate::guard::Guard;
 use crate::plan::{Incomplete, Plan};
+use crate::selector::{Pick, Selector};
 use crate::view::{Action, Outcome, RunView};
 
 /// How long the screen waits for a key before it draws again. It sets the pace of the busy
@@ -185,5 +188,43 @@ fn next_key(view: &mut RunView) -> io::Result<Action> {
     match event::read()? {
         Event::Key(key) if key.kind == KeyEventKind::Press => Ok(view.key(key)),
         _ => Ok(Action::None),
+    }
+}
+
+/// Opens the selector on `start` and returns the paths the operator marked, in a stable order.
+/// It returns nothing when the operator quit, which is the same answer as marking nothing.
+/// Each directory is read on a thread of its own, so a slow one shows a loading state and every
+/// key still answers.
+pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
+    let mut screen = FullScreen::enter()?;
+    let (mut selector, first) = Selector::open(start, guard);
+    let (sender, receiver) = mpsc::channel();
+    let read = |load: crate::selector::LoadRequest| {
+        let sender = sender.clone();
+        thread::spawn(move || {
+            let _ = sender.send(load.run());
+        });
+    };
+    read(first);
+    loop {
+        for loaded in receiver.try_iter() {
+            selector.loaded(loaded);
+        }
+        screen.0.draw(|frame| selector.draw(frame))?;
+        if !event::poll(FRAME)? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match selector.key(key) {
+            Pick::None => {}
+            Pick::Load(load) => read(load),
+            Pick::Done => return Ok(selector.targets()),
+            Pick::Quit => return Ok(Vec::new()),
+        }
     }
 }

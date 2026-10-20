@@ -4,6 +4,7 @@ use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use blank::engine::{DEFAULT_JOBS, DEFAULT_PASSES, Options, Stage, Update, destroy};
@@ -88,11 +89,22 @@ fn closed_pipe(error: &(dyn Error + 'static)) -> bool {
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
-    if cli.paths.is_empty() {
+    // A pipe or a file on either end means a script, which reads lines and cannot answer keys.
+    let headless = cli.no_ui || !io::stdin().is_terminal() || !io::stdout().is_terminal();
+    let guard = Arc::new(Guard::for_host());
+    let paths = if !cli.paths.is_empty() {
+        cli.paths.clone()
+    } else if headless {
         Cli::command().print_help()?;
         return Ok(());
-    }
-    let plan = Plan::enumerate(&cli.paths, &Guard::for_host())?;
+    } else {
+        let picked = screen::pick(&selector_start(&guard)?, Arc::clone(&guard))?;
+        if picked.is_empty() {
+            return Err("cancelled, nothing was destroyed".into());
+        }
+        picked
+    };
+    let plan = Plan::enumerate(&paths, &guard)?;
     if cli.dry_run {
         plan.write_dry_run(&mut io::stdout().lock())?;
         // A plan built over a directory nobody could read is missing whatever is inside it, so
@@ -147,8 +159,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             manifest.destroyed(path);
         }
     };
-    // A pipe or a file on either end means a script, which reads lines and cannot answer keys.
-    let headless = cli.no_ui || !io::stdin().is_terminal() || !io::stdout().is_terminal();
     let (report, interface) = if headless {
         (run_headless(&plan, options, &mut record), Ok(()))
     } else {
@@ -210,4 +220,18 @@ fn run_headless(
             }
         }
     })
+}
+
+/// The directory the selector opens on: the working directory, with every symlink on the way
+/// resolved, because the selector lists what a link points at. Marking costs one keystroke and
+/// the command line costs a typed path, so a directory the guard protects is refused here too.
+fn selector_start(guard: &Guard) -> Result<PathBuf, Box<dyn Error>> {
+    let start = std::env::current_dir()?.canonicalize()?;
+    guard.check(&start).map_err(|refusal| {
+        format!(
+            "{refusal}, so it will not open a selector there either. Name a path on the command \
+             line, or change to a narrower directory first"
+        )
+    })?;
+    Ok(start)
 }
