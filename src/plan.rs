@@ -214,17 +214,15 @@ impl Plan {
             match kind {
                 Kind::File => self.files.push(path),
                 Kind::Removal => self.removals.push(path),
-                Kind::Directory => {
-                    self.directories.push(path.clone());
-                    // A listing that fails looks exactly like an empty directory, so it is
-                    // recorded rather than skipped, or the files inside would never be queued.
-                    match sorted_names(&path) {
-                        Ok(names) => {
-                            pending.extend(names.into_iter().rev().map(|name| path.join(name)));
-                        }
-                        Err(error) => self.fail(&path, format!("read directory: {error}")),
+                // A directory nobody could list is not a target, because what it holds was never
+                // shown.
+                Kind::Directory => match sorted_names(&path) {
+                    Ok(names) => {
+                        pending.extend(names.into_iter().rev().map(|name| path.join(name)));
+                        self.directories.push(path);
                     }
-                }
+                    Err(error) => self.fail(&path, format!("read directory: {error}")),
+                },
             }
         }
     }

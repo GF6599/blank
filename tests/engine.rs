@@ -424,6 +424,41 @@ fn a_directory_the_walk_cannot_list_survives_with_its_contents() {
     assert!(root.path().is_dir());
 }
 
+/// An empty directory the walk cannot list is left on the disk and reported as intact.
+///
+/// Given: a tree holding an empty directory nobody can list.
+/// When: the run finishes.
+/// Then: the directory is still there, it is reported as intact, and the progress stops short of
+/// the whole.
+///
+/// Why it matters: the run cannot know what a directory it could not list holds, so removing it
+/// acts on contents nobody was shown, and a report that calls a removed directory intact is
+/// false.
+#[test]
+fn an_empty_directory_the_walk_cannot_list_is_left_and_reported_intact() {
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let locked = root.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // When:
+    let run = run(&[root.path()]);
+    let left = locked.symlink_metadata().is_ok();
+    if left {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    // Then:
+    assert!(left, "the run removed the directory it could not list");
+    assert!(report_line(&run, &locked).ends_with("(intact)"));
+    let &(done, total) = run.progress.last().expect("the run reports progress");
+    assert!(done < total, "{done} of {total}");
+}
+
 /// A directory swapped for a symlink after the plan is never followed.
 ///
 /// Given: a planned tree whose subdirectory is then moved away and replaced by a symlink to an

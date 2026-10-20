@@ -52,10 +52,11 @@ fn a_dry_run_names_every_target_and_destroys_nothing() {
 ///
 /// Given: a tree holding a directory nobody can list.
 /// When: the tree is dry run.
-/// Then: it exits non-zero and names that directory.
+/// Then: it exits non-zero, names that directory, and does not list it as a directory to delete.
 ///
 /// Why it matters: a plan built over a directory nobody could read is missing whatever is
-/// inside it, and reporting it as clean would understate what the run would destroy.
+/// inside it, and reporting it as clean would understate what the run would destroy. The run
+/// leaves that directory alone, so listing it would promise a deletion that never happens.
 #[test]
 fn a_dry_run_reports_what_it_could_not_read() {
     if nix::unistd::geteuid().is_root() {
@@ -80,6 +81,13 @@ fn a_dry_run_reports_what_it_could_not_read() {
             .contains(&format!("{}: read directory", text(&locked))),
         "{}",
         outcome.stderr
+    );
+    assert!(
+        !outcome
+            .stdout
+            .contains(&format!("Deleting directory {}\n", text(&locked))),
+        "{}",
+        outcome.stdout
     );
 }
 
