@@ -151,3 +151,44 @@ fn no_arguments_prints_the_usage() {
         );
     }
 }
+
+/// A name cannot disguise itself as a different name.
+///
+/// Given: a file whose name holds a right-to-left override, a zero-width space, a line
+/// separator, and ordinary Japanese text.
+/// When: the tree is dry run.
+/// Then: the three invisible or reordering characters are escaped, and the Japanese text is
+/// printed as it is.
+///
+/// Why it matters: a right-to-left override makes `invoice\u{202e}fdp.exe` display as
+/// `invoiceexe.pdf`, so the operator would approve one name and the run would destroy another.
+#[test]
+fn invisible_and_reordering_characters_in_a_name_are_escaped() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path()
+            .join("日本-invoice\u{202e}fdp\u{200b}\u{2028}.exe"),
+        "payload",
+    )
+    .unwrap();
+
+    // When:
+    let outcome = run(&["--dry-run", text(root.path())]);
+
+    // Then:
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome
+            .stdout
+            .contains("日本-invoice\\u{202e}fdp\\u{200b}\\u{2028}.exe"),
+        "{}",
+        outcome.stdout
+    );
+    for hidden in ['\u{202e}', '\u{200b}', '\u{2028}'] {
+        assert!(
+            !outcome.stdout.contains(hidden),
+            "{hidden:?} reached the terminal"
+        );
+    }
+}
