@@ -1,17 +1,32 @@
 version: 2
+
+# A pinned SHA never updates on its own, so without this the workflow pins rot
+# into permanently stale versions.
+#
+# Each group takes minor and patch only, so a major arrives as its own pull
+# request. That matters most for the actions, because they run in a job that
+# holds contents: write and a Homebrew tap token.
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    directory: "/"
     schedule:
       interval: weekly
     groups:
       actions:
-        patterns: ["*"]
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: gomod
-    directory: /
+    directory: "/"
     schedule:
       interval: weekly
     groups:
-      go:
-        patterns: ["*"]
+      go-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
