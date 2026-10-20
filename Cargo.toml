@@ -1,0 +1,10 @@
+[package]
+name = "blank"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+description = "Destroy files and directories so that the contents cannot be recovered"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }

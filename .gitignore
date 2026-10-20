@@ -8,3 +8,4 @@ dummy-data
 .gocache/
 bin/
 dist/
+/target/

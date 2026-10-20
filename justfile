@@ -24,15 +24,17 @@ default:
 run *args:
 	go run . {{args}}
 
-# Format go sources
+# Format the Go and Rust sources
 [group('dev')]
 fmt:
 	go fmt ./...
+	cargo fmt
 
-# Report sources that are not gofmt-clean, without rewriting them
+# Report sources that are not formatted, without rewriting them
 [group('dev')]
 fmt-check:
 	@test -z "$(gofmt -l .)" || { echo "Not gofmt-clean:"; gofmt -l .; echo "Run 'just fmt'."; exit 1; }
+	cargo fmt --check
 
 # Every tool is pinned by a tool directive in go.mod, so `go tool` builds it
 # against the module's own dependency graph. `go run <pkg>@<version>` resolved
@@ -45,21 +47,29 @@ lint:
 	go vet ./...
 	go tool staticcheck ./...
 	go tool govulncheck ./...
+	cargo clippy --all-targets --locked -- -D warnings
+	cargo deny check
 
 # Run the tests
 [group('dev')]
-test:
+test: _test-rust
 	go test ./...
 
-# Run the tests with the race detector
+# Run the tests, with the race detector on the Go side
 [group('dev')]
-test-race:
+test-race: _test-rust
 	go test -race -count=1 ./...
+
+# Run the Rust tests
+[private]
+_test-rust:
+	cargo test --locked
 
 # Run the full quality gate. CI and the commit commands call this by name.
 [group('dev')]
 check: fmt-check lint test-race
 	go build ./...
+	cargo build --locked
 
 # The tree holds a directory nobody can list, so a working run reports it,
 # leaves it alone, and exits non-zero.
@@ -111,10 +121,11 @@ install: build
 release-dry-run:
 	goreleaser release --snapshot --clean --skip=publish
 
-# Remove build output and the local go cache
+# Remove build output and the local caches
 [group('deploy')]
 clean:
 	rm -rf {{BIN_DIR}} {{DIST_DIR}} {{CACHE_DIR}}
+	cargo clean
 
 # Print the git version, commit, and build date
 [group('deploy')]
