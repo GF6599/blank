@@ -476,3 +476,34 @@ fn a_directory_moved_out_of_the_tree_is_not_reached_through_a_link() {
     assert_eq!(fs::read_to_string(moved.join("x.txt")).unwrap(), "planned");
     assert!(report_line(&run, &planned).ends_with("(intact)"));
 }
+
+/// Naming a file inside a selected directory as well never opens a path the walk could not.
+///
+/// Given: a tree and a file deep inside it, both named, whose directory is then moved outside the
+/// tree and replaced by a symlink to its new place.
+/// When: the run finishes.
+/// Then: the file in the moved directory still holds its bytes.
+///
+/// Why it matters: a glob names a directory and the files inside it together, and a run that
+/// opens the inner path by name follows the link that refusing to follow links exists to stop.
+#[test]
+fn a_file_named_inside_a_named_tree_is_reached_from_the_outer_root() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let sub = root.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    let planned = sub.join("x.txt");
+    fs::write(&planned, "planned").unwrap();
+    let plan = plan_of(&[root.path(), &planned]);
+    let outside = tempfile::tempdir().unwrap();
+    let moved = outside.path().join("sub");
+    fs::rename(&sub, &moved).unwrap();
+    symlink(&moved, &sub).unwrap();
+
+    // When:
+    let run = run_plan(&plan, 1);
+
+    // Then:
+    assert_eq!(fs::read_to_string(moved.join("x.txt")).unwrap(), "planned");
+    assert!(report_line(&run, &planned).ends_with("(intact)"));
+}

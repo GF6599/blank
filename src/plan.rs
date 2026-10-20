@@ -23,6 +23,9 @@ const FAILURES_NAMED: usize = 10;
 #[derive(Default)]
 pub struct Plan {
     roots: Vec<PathBuf>,
+    /// The same roots, for a lookup that does not grow with the number of arguments a glob
+    /// expands to.
+    root_set: HashSet<PathBuf>,
     pub files: Vec<PathBuf>,
     /// Symlinks and special files. Each is unlinked and never opened.
     pub removals: Vec<PathBuf>,
@@ -150,7 +153,7 @@ impl Plan {
                 }
             };
             guard.check(&path)?;
-            if !plan.roots.contains(&path) {
+            if plan.root_set.insert(path.clone()) {
                 plan.roots.push(path.clone());
             }
             targets.push(path);
@@ -243,14 +246,15 @@ impl Plan {
         &self.failures
     }
 
-    /// The directory a run opens by path to reach `target`: the parent of the deepest root
-    /// that holds it. Everything below that directory is reached by descriptor.
-    pub(crate) fn base_of(&self, target: &Path) -> Option<&Path> {
-        self.roots
-            .iter()
-            .filter(|root| target.starts_with(root))
-            .max_by_key(|root| root.components().count())
-            .and_then(|root| root.parent())
+    /// The directory a run opens by path to reach `target`: the parent of the outermost root
+    /// that holds it. Everything below that directory is reached by descriptor, so a root named
+    /// inside another root never lets the run open a selected directory by path.
+    pub(crate) fn base_of<'t>(&self, target: &'t Path) -> Option<&'t Path> {
+        target
+            .ancestors()
+            .filter(|ancestor| self.root_set.contains(*ancestor))
+            .last()
+            .and_then(Path::parent)
     }
 
     /// What the enumeration could not read, in the shape a run reports what it could not
