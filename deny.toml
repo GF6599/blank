@@ -6,9 +6,6 @@ targets = [
     "x86_64-unknown-linux-gnu",
 ]
 
-[advisories]
-ignore = []
-
 [licenses]
 allow = ["MIT", "Unicode-3.0"]
 
