@@ -1,15 +1,22 @@
 use std::fs;
+use std::num::NonZeroUsize;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
-use blank::engine::{COVER_CHUNK, Stage, destroy};
+use blank::engine::{COVER_CHUNK, DEFAULT_JOBS, Options, Stage, Update, destroy};
 use blank::guard::Guard;
 use blank::plan::Plan;
 use tempfile::TempDir;
 
 struct Run {
     report: Result<(), String>,
+    /// Every target the run did not destroy, with its reason and whether it is damaged, where
+    /// the report names only the first few.
+    survivors: Vec<(PathBuf, String, bool)>,
     events: Vec<(&'static str, PathBuf, Stage)>,
+    /// Each progress update as the share of the work done.
+    progress: Vec<(u64, u64)>,
 }
 
 fn plan_of(args: &[&Path]) -> Plan {
@@ -17,13 +24,51 @@ fn plan_of(args: &[&Path]) -> Plan {
     Plan::enumerate(&args, &Guard::for_host()).expect("no case here names a protected path")
 }
 
-fn run_plan(plan: &Plan, passes: u32) -> Run {
+fn options(jobs: usize, passes: u32) -> Options {
+    Options {
+        jobs: NonZeroUsize::new(jobs).expect("a test asks for at least one worker"),
+        passes,
+    }
+}
+
+/// Runs the plan, and calls `react` on each update after it is recorded, so a test can stop the
+/// run at a chosen point.
+fn run_reacting(
+    plan: &Plan,
+    options: Options,
+    stop: &AtomicBool,
+    mut react: impl FnMut(&Update<'_>),
+) -> Run {
     let mut events = Vec::new();
-    let report = destroy(plan, passes, &mut |event| {
-        events.push((event.verb, event.path.to_path_buf(), event.stage));
+    let mut progress = Vec::new();
+    let mut survivors = Vec::new();
+    let report = destroy(plan, options, stop, &mut |update| {
+        match &update {
+            Update::Target { verb, path, stage } => {
+                events.push((*verb, path.to_path_buf(), *stage));
+            }
+            Update::Progress { done, total } => progress.push((*done, *total)),
+        }
+        react(&update);
     })
-    .map_err(|incomplete| incomplete.to_string());
-    Run { report, events }
+    .map_err(|incomplete| {
+        for failure in incomplete.survivors() {
+            let path = failure.path().to_path_buf();
+            survivors.push((path, failure.reason().to_owned(), failure.damaged()));
+        }
+        incomplete.to_string()
+    });
+    Run {
+        report,
+        survivors,
+        events,
+        progress,
+    }
+}
+
+fn run_plan(plan: &Plan, passes: u32) -> Run {
+    let jobs = DEFAULT_JOBS.get();
+    run_reacting(plan, options(jobs, passes), &AtomicBool::new(false), |_| {})
 }
 
 fn run(args: &[&Path]) -> Run {
@@ -46,6 +91,15 @@ fn report_line<'r>(run: &'r Run, path: &Path) -> &'r str {
         .lines()
         .find(|line| line.trim_start().starts_with(&named))
         .unwrap_or_else(|| panic!("the report does not name {}:\n{report}", path.display()))
+}
+
+/// Whether the run left `path` damaged, from the whole survivor list.
+fn damaged(run: &Run, path: &Path) -> bool {
+    run.survivors
+        .iter()
+        .find(|(at, _, _)| at == path)
+        .unwrap_or_else(|| panic!("the run does not name {} as a survivor", path.display()))
+        .2
 }
 
 /// Hardlinks `path` into a directory the run never touches, so a test can read the bytes after
@@ -506,4 +560,232 @@ fn a_file_named_inside_a_named_tree_is_reached_from_the_outer_root() {
     // Then:
     assert_eq!(fs::read_to_string(moved.join("x.txt")).unwrap(), "planned");
     assert!(report_line(&run, &planned).ends_with("(intact)"));
+}
+
+fn files_in(root: &Path, count: usize, contents: &[u8]) -> Vec<PathBuf> {
+    (0..count)
+        .map(|index| {
+            let path = root.join(format!("file-{index:02}.bin"));
+            fs::write(&path, contents).unwrap();
+            path
+        })
+        .collect()
+}
+
+/// The workers never run more targets at once than they were told to.
+///
+/// Given: many more files than the limit allows in flight.
+/// When: the run finishes, with one worker and then with four.
+/// Then: counting up on each start and down on each settle never passes the limit.
+///
+/// Why it matters: every target in flight is an open overwrite of a real file, so an unbounded
+/// pool starts hundreds at once, thrashes the disk, and holds a buffer for each.
+#[test]
+fn the_workers_never_run_more_targets_than_the_limit() {
+    for jobs in [1, 4] {
+        // Given:
+        let root = tempfile::tempdir().unwrap();
+        files_in(root.path(), 24, b"payload");
+
+        // When:
+        let stop = AtomicBool::new(false);
+        let run = run_reacting(&plan_of(&[root.path()]), options(jobs, 1), &stop, |_| {});
+
+        // Then:
+        assert_eq!(run.report, Ok(()), "jobs {jobs}");
+        let (mut live, mut peak) = (0, 0);
+        for (_, _, stage) in &run.events {
+            if *stage == Stage::Start {
+                live += 1;
+                peak = peak.max(live);
+            } else {
+                live -= 1;
+            }
+        }
+        assert!(
+            peak <= jobs,
+            "{peak} targets ran at once, the limit was {jobs}"
+        );
+    }
+}
+
+/// A stop that arrives before the run starts destroys nothing and names every target.
+///
+/// Given: a tree of files, and a stop already requested.
+/// When: the run is started.
+/// Then: no target is started, every file still holds its contents, and the report names each
+/// file and the directory as intact.
+///
+/// Why it matters: the exit code is the only thing a script reads, and a stopped run that
+/// reports success says the tree is gone while it still holds every byte.
+#[test]
+fn a_stop_before_the_run_starts_destroys_nothing_and_names_every_target() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let files = files_in(root.path(), 3, b"payload");
+    let stop = AtomicBool::new(true);
+
+    // When:
+    let run = run_reacting(&plan_of(&[root.path()]), options(2, 1), &stop, |_| {});
+
+    // Then:
+    assert!(run.events.is_empty(), "{:?}", run.events);
+    for path in files.iter().map(PathBuf::as_path).chain([root.path()]) {
+        assert!(!damaged(&run, path), "{}", path.display());
+    }
+    for path in &files {
+        assert_eq!(fs::read(path).unwrap(), b"payload");
+    }
+}
+
+/// A stop in the middle of a run ends the files in progress and reports each one as it is.
+///
+/// Given: a tree of files, each 20 MiB of covers long and holding one known byte.
+/// When: a stop is requested as the first file starts.
+/// Then: every file survives, an intact one still holds every original byte, and a damaged one
+/// no longer does.
+///
+/// Why it matters: an operator who stops a run decides what to do next from the report. A file
+/// reported intact that the covers reached is plaintext they believe they still have, and a
+/// stop that waits for a large file to finish can take minutes to arrive.
+#[test]
+fn a_stop_during_the_run_ends_the_files_in_progress() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let files = files_in(root.path(), 12, &vec![0xAB; COVER_CHUNK * 4]);
+    let stop = AtomicBool::new(false);
+
+    // When:
+    let run = run_reacting(&plan_of(&[root.path()]), options(2, 4), &stop, |update| {
+        if matches!(
+            update,
+            Update::Target {
+                stage: Stage::Start,
+                ..
+            }
+        ) {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+
+    // Then:
+    for path in &files {
+        let untouched = fs::read(path).unwrap().iter().all(|&byte| byte == 0xAB);
+        assert_eq!(
+            damaged(&run, path),
+            !untouched,
+            "{} is reported in the wrong state",
+            path.display()
+        );
+    }
+    assert!(!damaged(&run, root.path()));
+}
+
+/// Progress reaches the whole of the work when every target is destroyed.
+///
+/// Given: a tree with files of several sizes, an empty file, and a symlink.
+/// When: the run finishes.
+/// Then: progress never moves back, and the last update is the whole of the work.
+///
+/// Why it matters: a bar that ends short of the end on a clean run reads as a failure, and one
+/// that moves back reads as a fault in the tool.
+#[test]
+fn progress_reaches_the_whole_of_the_work_on_a_clean_run() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("small.txt"), "payload").unwrap();
+    fs::write(root.path().join("large.bin"), vec![1; COVER_CHUNK * 2]).unwrap();
+    fs::write(root.path().join("empty.txt"), "").unwrap();
+    symlink("small.txt", root.path().join("link")).unwrap();
+
+    // When:
+    let run = run(&[root.path()]);
+
+    // Then:
+    assert_eq!(run.report, Ok(()));
+    assert!(run.progress.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    let &(done, total) = run.progress.last().expect("the run reports progress");
+    assert_eq!(done, total);
+}
+
+/// A run that could not destroy everything never reports the whole of the work.
+///
+/// Given: a file whose directory refuses the rename that ends the overwrite.
+/// When: every cover has landed and the entry still cannot be removed.
+/// Then: the last progress update stops short of the whole.
+///
+/// Why it matters: a full bar printed above a list of targets the run did not destroy reads as
+/// a contradiction, and this is the case that reaches it, since every byte of the covers landed.
+#[test]
+fn progress_stops_short_when_a_target_is_not_destroyed() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("secret.txt");
+    fs::write(&path, vec![0xAB; 4096]).unwrap();
+    let Some(_sealed) = Sealed::new(root.path()) else {
+        return;
+    };
+
+    // When:
+    let run = run(&[&path]);
+
+    // Then:
+    assert!(run.report.is_err());
+    let &(done, total) = run.progress.last().expect("the run reports progress");
+    assert!(done < total, "{done} of {total}");
+}
+
+/// Progress moves inside a large file before the file is finished.
+///
+/// Given: one file several writes long.
+/// When: it is destroyed.
+/// Then: the first progress update is a part of the work, not none and not all of it.
+///
+/// Why it matters: a run over one large file would otherwise sit still for minutes, which reads
+/// as a hang and invites the operator to stop exactly the work that must not be stopped.
+#[test]
+fn progress_moves_inside_a_large_file() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("large.bin");
+    fs::write(&path, vec![1; COVER_CHUNK * 4]).unwrap();
+
+    // When:
+    let run = run(&[&path]);
+
+    // Then:
+    assert_eq!(run.report, Ok(()));
+    let &(done, total) = run.progress.first().expect("the run reports progress");
+    assert!(0 < done && done < total, "{done} of {total}");
+}
+
+/// A run whose caller fails stops taking new files.
+///
+/// Given: a tree of files and one worker.
+/// When: the caller panics as it records the first start.
+/// Then: every file after the first is still on the disk.
+///
+/// Why it matters: the caller holds the only record of the run, so a worker that goes on after
+/// it is gone destroys the rest of the tree with nothing left to report what it destroyed.
+#[test]
+fn a_run_whose_caller_fails_stops_taking_new_files() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let files = files_in(root.path(), 10, b"payload");
+    let plan = plan_of(&[root.path()]);
+
+    // When:
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_reacting(&plan, options(1, 1), &AtomicBool::new(false), |update| {
+            if matches!(update, Update::Target { .. }) {
+                panic!("the caller fails");
+            }
+        })
+    }));
+
+    // Then:
+    assert!(failed.is_err());
+    for path in &files[1..] {
+        assert_eq!(fs::read(path).unwrap(), b"payload", "{}", path.display());
+    }
 }

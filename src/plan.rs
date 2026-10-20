@@ -32,10 +32,17 @@ pub struct Plan {
     /// In walk order, each directory before what it holds.
     pub directories: Vec<PathBuf>,
     failures: Vec<Failure>,
-    /// The device and inode of every target as the walk found it. The run checks each one
-    /// again before it acts, so a name later pointed at another file is refused. A file deleted
-    /// and created again under the same name can receive the inode just freed, and passes.
-    identities: HashMap<PathBuf, Identity>,
+    found: HashMap<PathBuf, Found>,
+}
+
+/// One target as the walk found it.
+#[derive(Clone, Copy)]
+struct Found {
+    /// The run checks the device and inode again before it acts, so a name later pointed at
+    /// another file is refused. A file deleted and created again under the same name can
+    /// receive the inode just freed, and passes.
+    identity: Identity,
+    size: u64,
 }
 
 pub struct Target {
@@ -62,7 +69,7 @@ impl Identity {
 }
 
 #[derive(Clone)]
-pub(crate) struct Failure {
+pub struct Failure {
     path: PathBuf,
     reason: String,
     /// A cover landed before the run stopped, so the entry is still on the disk and the
@@ -79,6 +86,18 @@ impl Failure {
             damaged,
         }
     }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub fn damaged(&self) -> bool {
+        self.damaged
+    }
 }
 
 /// The targets a run did not destroy. The caller believes they are gone, so the report names
@@ -90,6 +109,11 @@ pub struct Incomplete {
 impl Incomplete {
     pub(crate) fn new(failures: Vec<Failure>) -> Incomplete {
         Incomplete { failures }
+    }
+
+    /// Every target the run did not destroy, where the report names at most a few.
+    pub fn survivors(&self) -> &[Failure] {
+        &self.failures
     }
 }
 
@@ -178,8 +202,8 @@ impl Plan {
                 continue;
             }
             let kind = match classify(&path) {
-                Ok((kind, identity)) => {
-                    self.identities.insert(path.clone(), identity);
+                Ok((kind, found)) => {
+                    self.found.insert(path.clone(), found);
                     kind
                 }
                 Err(error) => {
@@ -239,7 +263,40 @@ impl Plan {
     }
 
     pub(crate) fn identity(&self, path: &Path) -> Option<Identity> {
-        self.identities.get(path).copied()
+        self.found.get(path).map(|found| found.identity)
+    }
+
+    /// The length of a file as the walk found it, and zero for every other target.
+    pub(crate) fn size(&self, path: &Path) -> u64 {
+        self.found.get(path).map_or(0, |found| found.size)
+    }
+
+    /// Reports whether a run of this plan would destroy `path`, or the directory that holds it.
+    /// The check compares the device and inode of the path and of each directory above it with
+    /// the targets, so a second name for a planned file or directory is caught where the text
+    /// of the two paths differs: a hard link, a symlink in a parent, or a different letter case
+    /// on a file system that ignores case. The path is resolved as an open resolves it, and
+    /// not cleaned by text, because a `..` after a symlink leaves the directory the link points
+    /// at.
+    pub fn contains(&self, path: &Path) -> bool {
+        let planned = |path: &Path, kind: Kind| {
+            classify(path).is_ok_and(|(found_kind, found)| {
+                found_kind == kind
+                    && self
+                        .found
+                        .values()
+                        .any(|target| target.identity == found.identity)
+            })
+        };
+        if planned(path, Kind::File) {
+            return true;
+        }
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        fs::canonicalize(parent)
+            .is_ok_and(|parent| parent.ancestors().any(|dir| planned(dir, Kind::Directory)))
     }
 
     pub(crate) fn failures(&self) -> &[Failure] {
@@ -297,9 +354,12 @@ fn counted(count: usize, singular: &str, plural: &str) -> String {
 }
 
 /// Reads the path once, without following a symlink.
-fn classify(path: &Path) -> io::Result<(Kind, Identity)> {
+fn classify(path: &Path) -> io::Result<(Kind, Found)> {
     let metadata = fs::symlink_metadata(path)?;
-    let identity = Identity::new(metadata.dev(), metadata.ino());
+    let found = Found {
+        identity: Identity::new(metadata.dev(), metadata.ino()),
+        size: metadata.len(),
+    };
     let kind = metadata.file_type();
     let kind = if kind.is_symlink() {
         Kind::Removal
@@ -312,7 +372,7 @@ fn classify(path: &Path) -> io::Result<(Kind, Identity)> {
         // these blocks until a peer arrives.
         Kind::Removal
     };
-    Ok((kind, identity))
+    Ok((kind, found))
 }
 
 /// The operating system lists a directory in no fixed order, so the names are sorted and two

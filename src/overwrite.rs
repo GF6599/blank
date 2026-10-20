@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, BorrowedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nix::sys::stat::{FchmodatFlags, Mode as ChmodMode, fchmod, fchmodat};
 use rand::Rng;
@@ -11,7 +12,7 @@ use rustix::fs::{
 };
 use rustix::io::Errno;
 
-use crate::engine::{CHANGED, COVER_CHUNK, TargetError, identity_at, identity_of};
+use crate::engine::{CHANGED, COVER_CHUNK, STOPPED, TargetError, identity_at, identity_of};
 use crate::plan::Identity;
 
 /// What a file that refuses to open for writing is set to, as `shred -f` does. Nothing narrower
@@ -22,6 +23,15 @@ const FORCED_MODE: ChmodMode = ChmodMode::S_IRUSR.union(ChmodMode::S_IWUSR);
 const OBSCURE_ATTEMPTS: usize = 128;
 
 type Fill = fn(&mut [u8]);
+
+pub(crate) struct Covers<'w> {
+    pub(crate) passes: u32,
+    /// Grown to the largest write the worker has needed, and never past `COVER_CHUNK`.
+    pub(crate) buf: &'w mut Vec<u8>,
+    /// Checked before every write, so a stop ends a large file within one chunk.
+    pub(crate) stop: &'w AtomicBool,
+    pub(crate) landed: &'w mut dyn FnMut(u64),
+}
 
 /// A fresh stream for every chunk, so a pass never repeats a block pattern that would survive
 /// as a recognisable stripe. `rand::rng` is a cryptographic generator the operating system
@@ -44,20 +54,27 @@ pub(crate) fn overwrite(
     parent: BorrowedFd<'_>,
     name: &OsStr,
     planned: Identity,
-    passes: u32,
+    covers: &mut Covers<'_>,
 ) -> Result<(), TargetError> {
     let (mut file, size) =
         open_for_overwrite(parent, name, planned).map_err(TargetError::intact)?;
-    let mut buf = vec![0; COVER_CHUNK.min(usize::try_from(size).unwrap_or(COVER_CHUNK))];
+    let needed = COVER_CHUNK.min(usize::try_from(size).unwrap_or(COVER_CHUNK));
+    if covers.buf.len() < needed {
+        covers.buf.resize(needed, 0);
+    }
     let mut covered = 0;
     // An empty file has no contents to cover, and a flush to the device costs milliseconds
     // on macOS, which a tree of many empty files multiplies into minutes.
-    let covers = if size == 0 { 0 } else { passes as usize + 1 };
-    let fills = std::iter::repeat_n(random_fill as Fill, passes as usize)
+    let count = if size == 0 {
+        0
+    } else {
+        covers.passes as usize + 1
+    };
+    let fills = std::iter::repeat_n(random_fill as Fill, covers.passes as usize)
         .chain(std::iter::once(zero_fill as Fill))
-        .take(covers);
+        .take(count);
     for (pass, fill) in fills.enumerate() {
-        cover(&mut file, size, fill, &mut buf, &mut covered)
+        cover(&mut file, size, fill, covers, &mut covered)
             .map_err(|error| TargetError::after(covered, format!("cover {}: {error}", pass + 1)))?;
     }
     drop(file);
@@ -141,12 +158,16 @@ fn cover(
     file: &mut File,
     size: u64,
     fill: Fill,
-    buf: &mut [u8],
+    covers: &mut Covers<'_>,
     covered: &mut u64,
 ) -> io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
+    let buf = &mut covers.buf[..];
     let mut written = 0;
     while written < size {
+        if covers.stop.load(Ordering::Relaxed) {
+            return Err(io::Error::other(STOPPED));
+        }
         let length = usize::try_from(size - written).map_or(buf.len(), |left| left.min(buf.len()));
         let chunk = &mut buf[..length];
         fill(chunk);
@@ -158,6 +179,7 @@ fn cover(
             }
             landed += count;
             *covered += count as u64;
+            (covers.landed)(count as u64);
         }
         written += length as u64;
     }

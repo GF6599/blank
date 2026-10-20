@@ -26,13 +26,17 @@ fn a_confirmed_run_destroys_the_tree_and_names_each_target() {
 
     // Then:
     assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let activity: Vec<&str> = outcome
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("Activity:"))
+        .collect();
     assert_eq!(
-        outcome.stdout,
-        format!(
-            "Activity: Overwriting {}\nActivity: Deleting directory {}\n",
-            text(&secret),
-            text(root.path())
-        )
+        activity,
+        [
+            format!("Activity: Overwriting {}", text(&secret)),
+            format!("Activity: Deleting directory {}", text(root.path())),
+        ]
     );
     assert!(root.path().symlink_metadata().is_err());
 }
@@ -110,4 +114,62 @@ fn a_mixed_tree_is_destroyed_except_what_cannot_be_reached() {
     left.sort();
     assert_eq!(left, ["no_list_dir"]);
     assert!(locked.join("hidden.txt").exists());
+}
+
+/// Headless progress prints a line only when the whole percent moves.
+///
+/// Given: a tree of 300 files, so a line per target would be three per percent.
+/// When: the tree is destroyed.
+/// Then: there is at most one progress line per whole percent, and the last says 100%.
+///
+/// Why it matters: one line per target buries the activity lines a caller reads the run from,
+/// and a tree of a hundred thousand files would print a hundred thousand of them.
+#[test]
+fn progress_prints_a_line_only_when_the_percent_moves() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    for index in 0..300 {
+        fs::write(root.path().join(format!("file-{index:03}.txt")), "payload").unwrap();
+    }
+
+    // When:
+    let outcome = run(&["--yes", "--passes", "1", text(root.path())]);
+
+    // Then:
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let progress: Vec<&str> = outcome
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("Progress:"))
+        .collect();
+    assert!(progress.len() <= 101, "{} progress lines", progress.len());
+    assert_eq!(progress.last(), Some(&"Progress: 100%"));
+}
+
+/// A pool of no workers is refused before anything is destroyed.
+///
+/// Given: a tree with a file in it.
+/// When: the run is given --jobs 0.
+/// Then: it exits non-zero, names the flag, and the file still holds its contents.
+///
+/// Why it matters: a pool of no workers would leave every file queued against nothing, so the
+/// run would hang with the tree half planned and nothing reported.
+#[test]
+fn a_pool_of_no_workers_is_refused_before_anything_is_destroyed() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let victim = root.path().join("victim.txt");
+    fs::write(&victim, "payload").unwrap();
+
+    // When:
+    let outcome = run(&["--yes", "--jobs", "0", text(root.path())]);
+
+    // Then:
+    assert_ne!(outcome.code, 0);
+    assert!(
+        outcome.stderr.contains("invalid value '0' for '--jobs"),
+        "{}",
+        outcome.stderr
+    );
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "payload");
 }
