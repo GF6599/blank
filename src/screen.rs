@@ -246,7 +246,6 @@ pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
     }
 }
 
-/// What a reading thread hands back to the selector.
 enum Read {
     Loaded(Loaded),
     Finished(Finished),

@@ -42,7 +42,8 @@ const PREVIEW_TITLE: &str = "preview";
 const SIDE_BY_SIDE_WIDTH: u16 = 64;
 /// Below this height a stacked preview would leave the listing too few rows to browse.
 const STACKED_HEIGHT: u16 = 10;
-/// The offset, two spaces, three cells a byte, two spaces, and a cell a byte.
+/// A hex line is the offset and two gaps of two cells, then four cells a byte, less the space
+/// that the last byte of hex does not take.
 const HEX_OVERHEAD: u16 = 4 + 2 + 2 - 1;
 const HEX_CELLS_PER_BYTE: u16 = 4;
 const HEX_MOST_BYTES: u16 = 16;
