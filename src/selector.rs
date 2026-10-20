@@ -571,6 +571,11 @@ impl Selector {
 
     fn draw_listing(&mut self, buffer: &mut Buffer, area: Rect) {
         self.panel_rows = panel_rows(area);
+        // A taller screen than the last one shows again the rows above, rather than empty rows
+        // below.
+        self.first = self
+            .first
+            .min(self.shown().len().saturating_sub(self.panel_rows));
         if self.cursor < self.first {
             self.first = self.cursor;
         } else if self.cursor >= self.first + self.panel_rows {

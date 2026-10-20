@@ -968,3 +968,28 @@ fn the_totals_row_keeps_whole_numbers_on_a_narrow_screen() {
         );
     }
 }
+
+/// A taller screen shows again the entries a short one scrolled away.
+///
+/// Given: a selector drawn on a short terminal with the cursor on the last of eight entries.
+/// When: it is drawn on a tall one.
+/// Then: the first entry is on the screen again.
+///
+/// Why it matters: a terminal is resized while the screen is up, and a list that keeps its top
+/// entries hidden above empty space reads as a shorter directory.
+#[test]
+fn a_taller_screen_shows_again_the_entries_a_short_one_scrolled_away() {
+    // Given:
+    let names: Vec<String> = (1..=8).map(|index| format!("file-{index}.txt")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let root = tree(&refs);
+    let mut selector = open(root.path());
+    press(&mut selector, KeyCode::End);
+    render(&mut selector, 40, 14);
+
+    // When:
+    let text = lines(&render(&mut selector, 100, 40)).join("\n");
+
+    // Then:
+    assert!(text.contains("file-1.txt"), "{text}");
+}
