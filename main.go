@@ -10,8 +10,24 @@
 
 package main
 
-import "github.com/GF6599/blank/cmd"
+import (
+	"runtime/debug"
+
+	"github.com/GF6599/blank/cmd"
+)
+
+// version, commit, and date are set at build time through
+// -ldflags "-X main.version=...", which only a goreleaser build passes. Every
+// other route leaves the defaults for resolveBuildIdentity to fill in.
+var (
+	version = versionUnset
+	commit  = commitUnset
+	date    = dateUnset
+)
 
 func main() {
+	info, _ := debug.ReadBuildInfo()
+	linker := buildIdentity{version: version, commit: commit, date: date}
+	cmd.SetVersion(resolveBuildIdentity(linker, info).String())
 	cmd.Execute()
 }

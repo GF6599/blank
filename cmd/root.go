@@ -28,8 +28,9 @@ func NewRootCommand() *cobra.Command {
 	var logPath string
 	var jobs, passes int
 	rootCmd := &cobra.Command{
-		Use:   "blank [file|dir]...",
-		Short: "Destroy files and directories beyond recovery.",
+		Use:     "blank [file|dir]...",
+		Version: versionString,
+		Short:   "Destroy files and directories beyond recovery.",
 		Long: "blank overwrites every file with random data, then once with zeros, " +
 			"then removes the directories it walked. Deletion is permanent.",
 		// A failure has to reach the exit code, so the command returns it and
@@ -126,6 +127,15 @@ func NewRootCommand() *cobra.Command {
 		"Random passes over each file before the final zero pass")
 	return rootCmd
 }
+
+// versionString is what Cobra renders for --version. Package main wires it from
+// the linker values before the command is built, because -X can only write to a
+// variable in the main package.
+var versionString = "dev"
+
+// SetVersion supplies the build identity. It runs before NewRootCommand,
+// because the command reads the value at construction.
+func SetVersion(v string) { versionString = v }
 
 // errShowUsage says the caller asked a usage question rather than named a
 // place to browse.
