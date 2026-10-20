@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::guard::{Guard, Refusal};
 use crate::terminal::{escape, escape_path};
@@ -105,6 +106,16 @@ impl Statistics<'_> {
 
 /// A byte count in a binary unit, with the exact count beside it once the unit rounds it.
 fn size(bytes: u64) -> String {
+    let short = short_size(bytes);
+    if bytes < 1024 {
+        short
+    } else {
+        format!("{short} ({bytes} bytes)")
+    }
+}
+
+/// A byte count in a binary unit with one decimal, or in bytes below a kibibyte.
+pub fn short_size(bytes: u64) -> String {
     if bytes < 1024 {
         return counted(
             usize::try_from(bytes).unwrap_or(usize::MAX),
@@ -119,7 +130,7 @@ fn size(bytes: u64) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    format!("{value:.1} {} ({bytes} bytes)", SIZE_UNITS[unit])
+    format!("{value:.1} {}", SIZE_UNITS[unit])
 }
 
 pub struct Target {
@@ -243,6 +254,18 @@ impl Plan {
     /// changes nothing. Every argument passes the guard before any of them is expanded, so a
     /// command line holding one protected path plans nothing at all.
     pub fn enumerate(args: &[PathBuf], guard: &Guard) -> Result<Plan, Refusal> {
+        let plan = Plan::enumerate_until_stopped(args, guard, &AtomicBool::new(false))?;
+        Ok(plan.expect("nothing sets the flag"))
+    }
+
+    /// Enumerates like `enumerate`, and returns no plan once `stop` is set. A preview walks a
+    /// tree for each cursor move, and a walk nobody will read must end rather than hold a thread
+    /// for the size of the tree.
+    pub fn enumerate_until_stopped(
+        args: &[PathBuf],
+        guard: &Guard,
+        stop: &AtomicBool,
+    ) -> Result<Option<Plan>, Refusal> {
         let mut plan = Plan::default();
         let mut targets = Vec::with_capacity(args.len());
         for arg in args {
@@ -261,9 +284,11 @@ impl Plan {
         }
         let mut seen = HashSet::new();
         for target in targets {
-            plan.walk(target, &mut seen);
+            if !plan.walk(target, &mut seen, stop) {
+                return Ok(None);
+            }
         }
-        Ok(plan)
+        Ok(Some(plan))
     }
 
     /// Collects the tree under `root` depth first. The stack holds the paths still to visit,
@@ -272,9 +297,13 @@ impl Plan {
     ///
     /// Arguments overlap whenever a glob expands beside the directory holding it, so `seen`
     /// keeps a target from being planned twice.
-    fn walk(&mut self, root: PathBuf, seen: &mut HashSet<PathBuf>) {
+    /// Returns false when `stop` ended the walk early.
+    fn walk(&mut self, root: PathBuf, seen: &mut HashSet<PathBuf>, stop: &AtomicBool) -> bool {
         let mut pending = vec![root];
         while let Some(path) = pending.pop() {
+            if stop.load(Ordering::Relaxed) {
+                return false;
+            }
             if !seen.insert(path.clone()) {
                 continue;
             }
@@ -308,6 +337,7 @@ impl Plan {
                 },
             }
         }
+        true
     }
 
     fn count_file(&mut self, path: &Path) {
@@ -451,7 +481,7 @@ impl Plan {
     }
 }
 
-fn counted(count: usize, singular: &str, plural: &str) -> String {
+pub(crate) fn counted(count: usize, singular: &str, plural: &str) -> String {
     if count == 1 {
         format!("{count} {singular}")
     } else {

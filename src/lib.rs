@@ -4,6 +4,7 @@ pub mod guard;
 pub mod manifest;
 mod overwrite;
 pub mod plan;
+pub mod preview;
 pub mod question;
 pub mod screen;
 pub mod selector;
