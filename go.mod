@@ -1,6 +1,8 @@
 module blank
 
-go 1.24.2
+go 1.27
+
+toolchain go1.27.0
 
 require (
 	github.com/charmbracelet/bubbles v0.21.0
@@ -8,10 +10,11 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.2
 	github.com/spf13/cobra v1.10.1
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
+	github.com/BurntSushi/toml v1.4.1-0.20240526193622-a339e1f7089c // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.3.3 // indirect
@@ -34,5 +37,17 @@ require (
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
 	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/vuln v1.7.0 // indirect
+	honnef.co/go/tools v0.8.2 // indirect
+)
+
+tool (
+	golang.org/x/vuln/cmd/govulncheck
+	honnef.co/go/tools/cmd/staticcheck
 )

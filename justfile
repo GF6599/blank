@@ -9,8 +9,6 @@ DIST_DIR := "dist"
 CACHE_DIR := ".gocache"
 INSTALL_DIR := home_directory() / "self-made-bin"
 
-STATICCHECK := "honnef.co/go/tools/cmd/staticcheck@v0.7.0"
-
 VERSION := `git describe --tags --always --dirty 2>/dev/null || echo dev`
 COMMIT  := `git rev-parse --short HEAD 2>/dev/null || echo none`
 DATE    := `date -u +%Y-%m-%dT%H:%M:%SZ`
@@ -38,11 +36,17 @@ fmt:
 fmt-check:
 	@test -z "$(gofmt -l .)" || { echo "Not gofmt-clean:"; gofmt -l .; echo "Run 'just fmt'."; exit 1; }
 
-# Vet and lint go sources
+# Every tool is pinned by a tool directive in go.mod, so `go tool` builds it
+# against the module's own dependency graph. `go run <pkg>@<version>` resolved
+# x/tools through the tool's go.mod instead, which pinned a version too old to
+# decode the export data a current toolchain emits.
+
+# Vet, lint, and check the dependencies for known vulnerabilities
 [group('dev')]
 lint:
 	go vet ./...
-	go run {{STATICCHECK}} ./...
+	go tool staticcheck ./...
+	go tool govulncheck ./...
 
 # Run the tests
 [group('dev')]
