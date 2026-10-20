@@ -7,10 +7,13 @@ targets = [
 ]
 
 [licenses]
-allow = ["MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 
 [bans]
 multiple-versions = "deny"
+skip = [
+    { crate = "syn@2", reason = "compile-time only, until derive_more and strum_macros move to syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"
