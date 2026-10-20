@@ -38,9 +38,8 @@ const (
 // and a pseudo-version otherwise, and Go appends "+dirty" to that version
 // itself.
 //
-// Go cannot read the repository from an extracted tarball, or from inside a git
-// worktree, because it looks for a .git directory and a worktree has a .git
-// file. Both leave the defaults standing.
+// An extracted tarball carries no .git, so Go has no repository to read and a
+// build from one leaves the defaults standing.
 func resolveBuildIdentity(linker buildIdentity, info *debug.BuildInfo) buildIdentity {
 	// The linker is the most specific source, so what it set wins outright.
 	if linker.version != versionUnset || info == nil {
