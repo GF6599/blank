@@ -14,7 +14,7 @@ use ratatui::style::Color;
 
 use crate::chrome::{
     CONTROLS_GAP, Column, LOVE, Line, MUTED, SUBTLE, TEXT, cells, clamp_tail, draw_controls,
-    draw_mark, draw_panel, panel_rows, put,
+    draw_mark, draw_panel, panel_rows, put, split_panes,
 };
 use crate::guard::Guard;
 use crate::pane::{PreviewPane, PreviewRequest, PreviewResult, totals_parts};
@@ -38,10 +38,6 @@ const CONTROLS: [&str; 3] = [
     "[q] quit",
 ];
 const FILTER_PROMPT: &str = "filter: ";
-/// Below this column width the panes cannot sit side by side and both stay readable.
-const SIDE_BY_SIDE_WIDTH: u16 = 64;
-/// Below this height a stacked preview would leave the listing too few rows to browse.
-const STACKED_HEIGHT: u16 = 10;
 
 pub enum Pick {
     None,
@@ -558,30 +554,10 @@ impl Selector {
     /// The listing and the preview side by side on a wide terminal, one above the other on a
     /// narrow one with the height for both, and the listing alone otherwise.
     fn draw_panes(&mut self, buffer: &mut Buffer, area: Rect) {
-        if area.width >= SIDE_BY_SIDE_WIDTH {
-            let list_width = area.width / 2;
-            let list = Rect::new(area.x, area.y, list_width, area.height);
-            let pane = Rect::new(
-                area.x + list_width + 1,
-                area.y,
-                area.width - list_width - 1,
-                area.height,
-            );
-            self.draw_listing(buffer, list);
+        let (list, pane) = split_panes(area);
+        self.draw_listing(buffer, list);
+        if let Some(pane) = pane {
             self.draw_preview(buffer, pane);
-        } else if area.height >= STACKED_HEIGHT {
-            let list_height = area.height - area.height / 2;
-            let list = Rect::new(area.x, area.y, area.width, list_height);
-            let pane = Rect::new(
-                area.x,
-                area.y + list_height,
-                area.width,
-                area.height - list_height,
-            );
-            self.draw_listing(buffer, list);
-            self.draw_preview(buffer, pane);
-        } else {
-            self.draw_listing(buffer, area);
         }
     }
 
@@ -622,6 +598,7 @@ impl Selector {
                     state,
                     state_color,
                     label: &entry.label,
+                    detail: None,
                     current: index == self.cursor,
                 }
             });

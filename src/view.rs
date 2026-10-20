@@ -348,6 +348,7 @@ impl RunView {
                 state,
                 state_color,
                 label: &row.text,
+                detail: None,
                 current: Some(index) == newest && self.report.is_none(),
             }
         });

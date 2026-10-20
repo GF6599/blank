@@ -54,6 +54,12 @@ const ROW_INDENT: u16 = 1;
 const SCROLLBAR_CELLS: u16 = 2;
 const SCROLL_THUMB: &str = "█";
 const ELLIPSIS: &str = "...";
+/// The fewest cells a label keeps beside a detail, which is dropped before the label goes below.
+const DETAIL_LABEL_CELLS: u16 = 8;
+/// Below this column width two panes cannot sit side by side and both stay readable.
+const SIDE_BY_SIDE_WIDTH: u16 = 64;
+/// Below this height a stacked pane would leave the list above it too few rows to browse.
+const STACKED_HEIGHT: u16 = 10;
 
 /// The column every block of a screen shares, so they line up on both edges.
 #[derive(Clone, Copy)]
@@ -106,6 +112,9 @@ pub(crate) struct Line<'a> {
     pub(crate) state: &'a str,
     pub(crate) state_color: Color,
     pub(crate) label: &'a str,
+    /// Drawn at the right of the row, and left out where it cannot fit whole, because a number
+    /// cut to fit reads as a smaller one.
+    pub(crate) detail: Option<(&'a str, Color)>,
     pub(crate) current: bool,
 }
 
@@ -142,6 +151,34 @@ pub(crate) fn draw_panel<'a>(
             let x = inner.right() - 1;
             put(buffer, x, y, SCROLL_THUMB, Style::new().fg(MUTED));
         }
+    }
+}
+
+/// Splits `area` into a list and a pane: side by side on a wide terminal, one above the other
+/// on a narrow one with the height for both, and the list alone otherwise.
+pub(crate) fn split_panes(area: Rect) -> (Rect, Option<Rect>) {
+    if area.width >= SIDE_BY_SIDE_WIDTH {
+        let list_width = area.width / 2;
+        let list = Rect::new(area.x, area.y, list_width, area.height);
+        let pane = Rect::new(
+            area.x + list_width + 1,
+            area.y,
+            area.width - list_width - 1,
+            area.height,
+        );
+        (list, Some(pane))
+    } else if area.height >= STACKED_HEIGHT {
+        let list_height = area.height - area.height / 2;
+        let list = Rect::new(area.x, area.y, area.width, list_height);
+        let pane = Rect::new(
+            area.x,
+            area.y + list_height,
+            area.width,
+            area.height - list_height,
+        );
+        (list, Some(pane))
+    } else {
+        (area, None)
     }
 }
 
@@ -218,10 +255,18 @@ fn draw_line(buffer: &mut Buffer, x: u16, y: u16, width: u16, line: &Line<'_>) {
     } else {
         (" ", " ", TEXT)
     };
-    let label = clamp_tail(line.label, inner, ELLIPSIS);
+    let detail = line
+        .detail
+        .filter(|(detail, _)| cells(detail) + 1 + DETAIL_LABEL_CELLS <= inner);
+    let label_width = detail.map_or(inner, |(detail, _)| inner - cells(detail) - 1);
+    let label = clamp_tail(line.label, label_width, ELLIPSIS);
     put(buffer, x, y, lead, Style::new().fg(MARKER));
     put(buffer, x + 2, y, line.state, state_style);
     put(buffer, x + 4, y, &label, Style::new().fg(label_color));
+    if let Some((detail, color)) = detail {
+        let column = x + 4 + inner - cells(detail);
+        put(buffer, column, y, detail, Style::new().fg(color));
+    }
     put(buffer, x + width - 1, y, tail, Style::new().fg(MARKER));
 }
 
