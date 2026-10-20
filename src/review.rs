@@ -18,9 +18,8 @@ use crate::pane::{PreviewPane, PreviewRequest, PreviewResult};
 use crate::plan::{Plan, short_size};
 use crate::terminal::{escape, escape_path};
 
-/// The answer the run waits for, and the one wording of the question at each width, longest
-/// first.
 const YES: &str = "yes";
+/// The question at each width, longest first.
 const PROMPTS: [&str; 3] = [
     "Type yes and press enter to destroy them: ",
     "Type yes, then enter: ",
@@ -32,7 +31,6 @@ const TITLE: &str = "targets";
 const HEADER_LINES: usize = 6;
 const FAILED_MARK: &str = "!";
 
-/// What the operator answered on the review.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
     Waiting,
