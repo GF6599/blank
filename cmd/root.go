@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"blank/app"
-	"blank/tui"
+	"github.com/GF6599/blank/app"
+	"github.com/GF6599/blank/tui"
 
 	"github.com/spf13/cobra"
 )

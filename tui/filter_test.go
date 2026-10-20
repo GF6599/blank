@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 // pressRun drives the run screen with one keystroke per argument, in order.

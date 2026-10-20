@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 func entriesIn(t *testing.T, dir string) []entry {

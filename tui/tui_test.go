@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 // The activity panel keeps a bounded history.

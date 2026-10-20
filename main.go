@@ -10,7 +10,7 @@
 
 package main
 
-import "blank/cmd"
+import "github.com/GF6599/blank/cmd"
 
 func main() {
 	cmd.Execute()

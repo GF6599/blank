@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 func previewModel(t *testing.T, w, h int, pct float64, rows []activityRow, done bool) model {

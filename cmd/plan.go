@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 // confirm asks before anything is destroyed. Only a whole "yes" goes on: the

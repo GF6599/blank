@@ -1,4 +1,4 @@
-module blank
+module github.com/GF6599/blank
 
 go 1.27
 

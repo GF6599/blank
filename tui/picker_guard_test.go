@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"blank/app"
+	"github.com/GF6599/blank/app"
 )
 
 // A path the run would refuse cannot be marked.
