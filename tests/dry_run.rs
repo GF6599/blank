@@ -36,7 +36,8 @@ fn a_dry_run_names_every_target_and_destroys_nothing() {
             "Overwriting {note}\nRemoving {link}\nDeleting directory {nested}\n\
              Deleting directory {root}\n\
              Dry run. 1 file, 1 symlink or special file, and 2 directories. \
-             Nothing was destroyed.\n",
+             Nothing was destroyed.\n\
+             The files hold 7 bytes, and the covers will write 77 bytes in 11 passes.\n",
             note = text(&note),
             link = text(&link),
             nested = text(&nested),
@@ -52,7 +53,8 @@ fn a_dry_run_names_every_target_and_destroys_nothing() {
 ///
 /// Given: a tree holding a directory nobody can list.
 /// When: the tree is dry run.
-/// Then: it exits non-zero, names that directory, and does not list it as a directory to delete.
+/// Then: it exits non-zero, names that directory, says that it will survive, and does not list
+/// it as a directory to delete.
 ///
 /// Why it matters: a plan built over a directory nobody could read is missing whatever is
 /// inside it, and reporting it as clean would understate what the run would destroy. The run
@@ -86,6 +88,52 @@ fn a_dry_run_reports_what_it_could_not_read() {
         !outcome
             .stdout
             .contains(&format!("Deleting directory {}\n", text(&locked))),
+        "{}",
+        outcome.stdout
+    );
+    assert!(
+        outcome
+            .stdout
+            .contains("1 directory cannot be read, and it will survive the run.\n"),
+        "{}",
+        outcome.stdout
+    );
+}
+
+/// The totals use a binary unit with the exact byte count beside it.
+///
+/// Given: a file of 1536 bytes, and a file one byte short of a mebibyte.
+/// When: each is dry run with two random passes.
+/// Then: the totals read 1.5 KiB and 4.5 KiB with their exact counts, and the second file
+/// reads 1.0 MiB rather than 1024.0 KiB.
+///
+/// Why it matters: a rounded size is what the operator reads at a glance, and the exact count is
+/// what they compare with another tool when the two disagree.
+#[test]
+fn the_totals_use_a_binary_unit_and_the_exact_count() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("data.bin"), vec![0; 1536]).unwrap();
+
+    // When:
+    let outcome = run(&["--dry-run", "--passes", "2", text(root.path())]);
+
+    // Then:
+    assert!(
+        outcome.stdout.contains(
+            "The files hold 1.5 KiB (1536 bytes), and the covers will write \
+             4.5 KiB (4608 bytes) in 3 passes.\n"
+        ),
+        "{}",
+        outcome.stdout
+    );
+    let edge = tempfile::tempdir().unwrap();
+    fs::write(edge.path().join("data.bin"), vec![0; 1024 * 1024 - 1]).unwrap();
+    let outcome = run(&["--dry-run", "--passes", "2", text(edge.path())]);
+    assert!(
+        outcome
+            .stdout
+            .contains("The files hold 1.0 MiB (1048575 bytes)"),
         "{}",
         outcome.stdout
     );

@@ -106,7 +106,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     };
     let plan = Plan::enumerate(&paths, &guard)?;
     if cli.dry_run {
-        plan.write_dry_run(&mut io::stdout().lock())?;
+        plan.write_dry_run(&mut io::stdout().lock(), cli.passes)?;
         // A plan built over a directory nobody could read is missing whatever is inside it, so
         // reporting it as clean would understate what the run would destroy.
         return match plan.incomplete() {
@@ -125,7 +125,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     }
     // Nothing to destroy is not worth a question.
     if !cli.yes && plan.total() > 0 {
-        let confirmed = confirm(&mut io::stdin().lock(), &mut io::stdout().lock(), &plan)?;
+        let confirmed = confirm(
+            &mut io::stdin().lock(),
+            &mut io::stdout().lock(),
+            &plan,
+            cli.passes,
+        )?;
         if !confirmed {
             // An error rather than a clean exit, because exit zero is what this command says
             // when everything was destroyed.

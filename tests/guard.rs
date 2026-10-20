@@ -192,7 +192,8 @@ fn a_symlink_to_a_protected_path_is_still_removable() {
         outcome.stdout,
         format!(
             "Removing {}\nDry run. 0 files, 1 symlink or special file, and 0 directories. \
-             Nothing was destroyed.\n",
+             Nothing was destroyed.\n\
+             The files hold 0 bytes, and the covers will write 0 bytes in 11 passes.\n",
             text(&link)
         )
     );

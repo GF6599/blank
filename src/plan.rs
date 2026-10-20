@@ -18,6 +18,11 @@ pub const VERB_DIRECTORY: &str = "Deleting directory";
 /// Past this many the report stops being readable.
 const FAILURES_NAMED: usize = 10;
 
+/// How many of the largest files a plan keeps for the operator to see.
+const LARGEST_KEPT: usize = 5;
+
+const SIZE_UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+
 /// Everything a run would destroy, in one bucket per way of destroying a target. A run acts on
 /// nothing else, so what the operator is shown before it starts is what it works from.
 #[derive(Default)]
@@ -33,6 +38,12 @@ pub struct Plan {
     pub directories: Vec<PathBuf>,
     failures: Vec<Failure>,
     found: HashMap<PathBuf, Found>,
+    /// The total size of the files, the largest of them, biggest first, and the directories
+    /// nobody could list, all counted as the walk goes so the plan reads its statistics in one
+    /// place.
+    bytes: u64,
+    largest: Vec<(PathBuf, u64)>,
+    unreadable: Vec<PathBuf>,
 }
 
 /// One target as the walk found it.
@@ -43,6 +54,72 @@ struct Found {
     /// receive the inode just freed, and passes.
     identity: Identity,
     size: u64,
+}
+
+/// What a run of a plan would destroy, and what it would leave because the walk could not read
+/// it.
+pub struct Statistics<'p> {
+    pub files: usize,
+    pub removals: usize,
+    pub directories: usize,
+    /// The total size of the files.
+    pub bytes: u64,
+    /// The largest files, biggest first.
+    pub largest: &'p [(PathBuf, u64)],
+    /// The directories the walk could not list. Each survives the run with every directory
+    /// above it.
+    pub unreadable: &'p [PathBuf],
+}
+
+impl Statistics<'_> {
+    /// What the covers write: the size of every file, once for each random pass and once for
+    /// the zero pass. No time is given, because the speed belongs to the device and a duration
+    /// would be a guess, where the byte count is exact.
+    pub fn cover_bytes(&self, passes: u32) -> u64 {
+        self.bytes.saturating_mul(u64::from(passes) + 1)
+    }
+
+    /// The totals the dry run and the question both print, so the two read alike.
+    pub fn write_totals(&self, out: &mut impl Write, passes: u32) -> io::Result<()> {
+        let covers = passes.saturating_add(1);
+        let noun = if covers == 1 { "pass" } else { "passes" };
+        writeln!(
+            out,
+            "The files hold {}, and the covers will write {} in {covers} {noun}.",
+            size(self.bytes),
+            size(self.cover_bytes(passes)),
+        )?;
+        match self.unreadable.len() {
+            0 => Ok(()),
+            1 => writeln!(
+                out,
+                "1 directory cannot be read, and it will survive the run."
+            ),
+            count => writeln!(
+                out,
+                "{count} directories cannot be read, and they will survive the run."
+            ),
+        }
+    }
+}
+
+/// A byte count in a binary unit, with the exact count beside it once the unit rounds it.
+fn size(bytes: u64) -> String {
+    if bytes < 1024 {
+        return counted(
+            usize::try_from(bytes).unwrap_or(usize::MAX),
+            "byte",
+            "bytes",
+        );
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    // Rounded to one decimal, anything from 1023.95 up would read as 1024.0 of the smaller unit.
+    while value >= 1023.95 && unit + 1 < SIZE_UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {} ({bytes} bytes)", SIZE_UNITS[unit])
 }
 
 pub struct Target {
@@ -212,7 +289,10 @@ impl Plan {
                 }
             };
             match kind {
-                Kind::File => self.files.push(path),
+                Kind::File => {
+                    self.count_file(&path);
+                    self.files.push(path);
+                }
                 Kind::Removal => self.removals.push(path),
                 // A directory nobody could list is not a target, because what it holds was never
                 // shown.
@@ -221,9 +301,36 @@ impl Plan {
                         pending.extend(names.into_iter().rev().map(|name| path.join(name)));
                         self.directories.push(path);
                     }
-                    Err(error) => self.fail(&path, format!("read directory: {error}")),
+                    Err(error) => {
+                        self.fail(&path, format!("read directory: {error}"));
+                        self.unreadable.push(path);
+                    }
                 },
             }
+        }
+    }
+
+    fn count_file(&mut self, path: &Path) {
+        let size = self.size(path);
+        self.bytes = self.bytes.saturating_add(size);
+        if self.largest.len() == LARGEST_KEPT
+            && self.largest.last().is_some_and(|&(_, least)| least >= size)
+        {
+            return;
+        }
+        let at = self.largest.partition_point(|&(_, kept)| kept >= size);
+        self.largest.insert(at, (path.to_path_buf(), size));
+        self.largest.truncate(LARGEST_KEPT);
+    }
+
+    pub fn statistics(&self) -> Statistics<'_> {
+        Statistics {
+            files: self.files.len(),
+            removals: self.removals.len(),
+            directories: self.directories.len(),
+            bytes: self.bytes,
+            largest: &self.largest,
+            unreadable: &self.unreadable,
         }
     }
 
@@ -335,11 +442,12 @@ impl Plan {
 
     /// Writes every target, one per line, in run order. Long output is the point: a count alone
     /// cannot show that a command is aimed at the wrong directory.
-    pub fn write_dry_run(&self, out: &mut impl Write) -> io::Result<()> {
+    pub fn write_dry_run(&self, out: &mut impl Write, passes: u32) -> io::Result<()> {
         for target in self.targets() {
             writeln!(out, "{} {}", target.verb(), escape_path(&target.path))?;
         }
-        writeln!(out, "Dry run. {}. Nothing was destroyed.", self.summary())
+        writeln!(out, "Dry run. {}. Nothing was destroyed.", self.summary())?;
+        self.statistics().write_totals(out, passes)
     }
 }
 

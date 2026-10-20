@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use blank::engine::DEFAULT_PASSES;
 use blank::guard::Guard;
 use blank::plan::Plan;
 use blank::question::confirm;
@@ -16,7 +17,8 @@ fn plan_of(args: &[&Path]) -> Plan {
 
 fn ask(plan: &Plan, answer: &str) -> (bool, String) {
     let mut shown = Vec::new();
-    let go_on = confirm(&mut answer.as_bytes(), &mut shown, plan).expect("the question is asked");
+    let go_on = confirm(&mut answer.as_bytes(), &mut shown, plan, DEFAULT_PASSES)
+        .expect("the question is asked");
     (go_on, String::from_utf8(shown).unwrap())
 }
 
@@ -58,7 +60,8 @@ fn only_a_whole_yes_goes_on() {
 ///
 /// Given: a tree holding two files, one symlink and two directories.
 /// When: the question is asked.
-/// Then: it counts each kind and names the selected root.
+/// Then: it counts each kind, says what the files hold and what the covers will write, and
+/// names the selected root.
 ///
 /// Why it matters: a bare "are you sure" is answered yes by reflex. The counts and the root are
 /// what make a command aimed at the wrong directory visible in time.
@@ -80,6 +83,7 @@ fn the_question_counts_each_kind_and_names_the_root() {
         shown,
         format!(
             "blank will destroy 2 files, 1 symlink or special file, and 2 directories.\n\
+             The files hold 14 bytes, and the covers will write 154 bytes in 11 passes.\n\
              Selected roots:\n  {}\n\
              This cannot be undone. Type yes to continue: \n",
             text(root.path())
