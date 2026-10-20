@@ -97,7 +97,7 @@ name alone cannot tell them apart:
 
 | State | What is on the disk |
 | --- | --- |
-| `intact` | The target still holds everything it held. The run never wrote to it. |
+| `intact` | The target still holds everything it held. Its mode may have been widened to `0600`, because an overwrite forces the mode once when the first open is refused. |
 | `damaged, the contents are gone` | The entry is still there and its contents are not. At least one cover landed, so what it held is unrecoverable. |
 
 ```console
