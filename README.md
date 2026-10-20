@@ -142,7 +142,7 @@ that could not be opened all exit non-zero having destroyed nothing.
 
 | Dependency | Why |
 | --- | --- |
-| Go 1.24.2 or later | To build the binary. |
+| Go 1.27 or later | To build the binary. Not needed to install a release. |
 
 Nothing else. The overwrite and every removal are Go standard library calls, so `blank`
 runs with an empty `PATH` and needs no coreutils. It cross compiles for Windows, which no
@@ -150,16 +150,30 @@ release has been tested on.
 
 ## Install
 
+Homebrew, on macOS. Homebrew serves `blank` as a cask, and a cask does not install on
+Linux:
+
 ```sh
-just install
+brew install --cask GF6599/tap/blank
 ```
 
-This builds the binary and writes it to `~/self-made-bin/blank`. That directory is not on
-`PATH` by default, so add an alias:
+With a Go toolchain, on either platform:
+
+```sh
+go install github.com/GF6599/blank@latest
+```
+
+A release also carries a `tar.gz` for darwin and linux on amd64 and arm64, with
+`checksums.txt` beside it.
+
+`just install` writes the binary to `~/self-made-bin/blank` instead. That directory is not
+on `PATH` by default, so add an alias:
 
 ```sh
 alias blk="$HOME/self-made-bin/blank"
 ```
+
+`blank --version` names the build, which is what a bug report needs.
 
 ## Usage
 
@@ -280,6 +294,7 @@ stay destroyed.
 | `--passes` | Random covers over each file before the zero cover. Default 10. Below 0 is refused. |
 | `--log <path>` | Write the run log outside the selected targets. Off by default. |
 | `--no-ui` | Turn off the terminal interface and print one line per target to stdout. |
+| `--version` | Print the version, the commit, and the build date. |
 
 The work is disk bound, so the best `--jobs` value belongs to the device and not to the
 processor count. Over 120 files of 1 MiB on an NVMe disk, 16 workers took 136ms, 8 took
@@ -333,7 +348,7 @@ These are properties of the current implementation. Each one is reproducible.
 
 ```sh
 just          # list every recipe
-just check    # the full gate: format check, vet, staticcheck, race tests, build
+just check    # the full gate: format check, vet, staticcheck, govulncheck, race tests, build
 just run .    # go run . with the local build cache
 just e2e      # generate a dummy tree, destroy it, and check what survived
 ```
@@ -343,12 +358,27 @@ just e2e      # generate a dummy tree, destroy it, and check what survived
 | Recipe | Purpose |
 | --- | --- |
 | `fmt`, `fmt-check` | Rewrite or report `gofmt` drift. |
-| `lint` | `go vet` plus `staticcheck`. |
+| `lint` | `go vet`, `staticcheck`, and `govulncheck`. |
 | `test`, `test-race` | Run the suite, with or without the race detector. |
 | `build`, `build-race` | Write the binary to `bin/`. |
-| `release <os> <arch>`, `release-all` | Cross compile into `dist/`. |
-| `checksums` | Write `dist/SHA256SUMS`. |
+| `release-dry-run` | Render a full release into `dist/` and publish none of it. |
 | `clean` | Remove `bin/`, `dist/`, and the local build cache. |
+
+Each linter is pinned by a tool directive in `go.mod` and run through `go tool`, so a laptop
+and CI resolve it against the same dependency graph and report the same findings.
+
+### Releasing
+
+A release is a semver tag. Pushing one runs the gate, then goreleaser builds the archives,
+writes the checksums, publishes the GitHub release, and updates the Homebrew cask in
+`GF6599/homebrew-tap`.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Run the Release workflow by hand to render everything a tag would publish and publish none
+of it. That is where a template error surfaces, so prove an upgrade there before tagging.
 
 ## Layout
 
@@ -364,6 +394,7 @@ just e2e      # generate a dummy tree, destroy it, and check what survived
 ├── tui/tui.go              # Bubble Tea model: state, sizing, layout.
 ├── tui/picker.go           # The selector a run with no arguments opens.
 ├── tui/chrome.go           # The frame around the content: mark, panel, markers, palette.
+├── version.go              # Resolves what --version reports for each install route.
 ├── utils/gen-dummy-df.py   # Generates a dummy tree for `just e2e`.
 └── justfile                # Every task.
 ```
