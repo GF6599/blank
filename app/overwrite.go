@@ -26,6 +26,11 @@ const forcedMode os.FileMode = 0o600
 type fillFunc func([]byte)
 type writeProgressFunc func(int64)
 
+// math/rand/v2 rather than crypto/rand: since Go 1.22 the top-level functions
+// run on a ChaCha8 generator that the operating system seeds, and they are safe
+// for concurrent use, which the --jobs workers require. A cover has to leave
+// the device holding bytes that are not the plaintext, which needs an
+// unpredictable stream and not an auditable one.
 func randomFill(buf []byte) {
 	n := len(buf) &^ 7
 	for i := 0; i < n; i += 8 {
