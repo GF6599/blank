@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 
-use nix::sys::stat::{FchmodatFlags, Mode as ChmodMode, fchmodat};
+use nix::sys::stat::{FchmodatFlags, Mode as ChmodMode, fchmod, fchmodat};
 use rand::Rng;
 use rustix::fs::{
     AtFlags, FileType, Mode, OFlags, RenameFlags, fcntl_setfl, fstat, openat, renameat_with,
@@ -103,10 +103,22 @@ fn open_for_overwrite(
     Ok((File::from(fd), size))
 }
 
-/// Changes the mode only of the file the plan found. This goes through libc rather than a raw
-/// system call: before Linux 6.6 the kernel has no no-follow mode change, and glibc 2.32 and
-/// later emulates it through an `O_PATH` descriptor.
+/// Changes the mode only of the file the plan found. A descriptor pins the inode, so the change
+/// cannot land on a file that took the name after the check. A file its owner cannot even read
+/// cannot be opened for that, and falls back to a change by name, checked just before. That goes
+/// through libc rather than a raw system call: before Linux 6.6 the kernel has no no-follow mode
+/// change, and glibc 2.32 and later emulates it through an `O_PATH` descriptor.
 fn force_mode(parent: BorrowedFd<'_>, name: &OsStr, planned: Identity) -> Result<(), String> {
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    if let Ok(fd) = openat(parent, name, flags, Mode::empty()) {
+        let found = fstat(&fd)
+            .map(|stat| identity_of(&stat))
+            .map_err(|error| error.to_string())?;
+        if found != planned {
+            return Err(CHANGED.to_owned());
+        }
+        return fchmod(fd.as_fd(), FORCED_MODE).map_err(|error| error.to_string());
+    }
     match identity_at(parent, name) {
         Ok(found) if found == planned => {}
         Ok(_) => return Err(CHANGED.to_owned()),
