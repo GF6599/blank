@@ -14,11 +14,12 @@ use ratatui::style::Color;
 
 use crate::chrome::{
     CONTROLS_GAP, Column, LOVE, Line, MUTED, SUBTLE, TEXT, cells, clamp_tail, draw_controls,
-    draw_mark, draw_panel, draw_text_panel, panel_rows, put, wrap,
+    draw_mark, draw_panel, panel_rows, put,
 };
 use crate::guard::Guard;
-use crate::plan::{counted, short_size};
-use crate::preview::{Preview, Totals, preview};
+use crate::pane::{PreviewPane, PreviewRequest, PreviewResult, totals_parts};
+use crate::plan::short_size;
+use crate::preview::Totals;
 use crate::terminal::escape_path;
 
 /// Marking a directory destroys the whole tree under it, and marking a symlink destroys the
@@ -37,16 +38,10 @@ const CONTROLS: [&str; 3] = [
     "[q] quit",
 ];
 const FILTER_PROMPT: &str = "filter: ";
-const PREVIEW_TITLE: &str = "preview";
 /// Below this column width the panes cannot sit side by side and both stay readable.
 const SIDE_BY_SIDE_WIDTH: u16 = 64;
 /// Below this height a stacked preview would leave the listing too few rows to browse.
 const STACKED_HEIGHT: u16 = 10;
-/// A hex line is the offset and two gaps of two cells, then four cells a byte, less the space
-/// that the last byte of hex does not take.
-const HEX_OVERHEAD: u16 = 4 + 2 + 2 - 1;
-const HEX_CELLS_PER_BYTE: u16 = 4;
-const HEX_MOST_BYTES: u16 = 16;
 
 pub enum Pick {
     None,
@@ -71,12 +66,7 @@ pub struct Loaded(Result<Listing, String>);
 /// A read the selector asks the screen to run off its thread. Each carries the flag that a
 /// newer request of its kind sets, so a walk nobody will read ends early.
 pub enum Work {
-    Preview {
-        id: u64,
-        path: PathBuf,
-        guard: Arc<Guard>,
-        stop: Arc<AtomicBool>,
-    },
+    Preview(PreviewRequest),
     Totals {
         id: u64,
         paths: Vec<PathBuf>,
@@ -87,10 +77,7 @@ pub enum Work {
 
 /// What a piece of work found, or nothing when it was stopped.
 pub enum Finished {
-    Preview {
-        id: u64,
-        preview: Option<Preview>,
-    },
+    Preview(PreviewResult),
     Totals {
         id: u64,
         totals: Option<Result<Totals, String>>,
@@ -100,15 +87,7 @@ pub enum Finished {
 impl Work {
     pub fn run(&self) -> Finished {
         match self {
-            Work::Preview {
-                id,
-                path,
-                guard,
-                stop,
-            } => Finished::Preview {
-                id: *id,
-                preview: preview(path, guard, stop),
-            },
+            Work::Preview(request) => Finished::Preview(request.run()),
             Work::Totals {
                 id,
                 paths,
@@ -210,11 +189,7 @@ pub struct Selector {
     /// on screen over an unrelated row.
     refusal: Option<String>,
     confirmed: bool,
-    /// The path the preview pane is for, and what it found, which is nothing while it reads.
-    previewed: Option<PathBuf>,
-    preview: Option<Preview>,
-    preview_id: u64,
-    preview_stop: Arc<AtomicBool>,
+    pane: PreviewPane,
     marks_changed: bool,
     totals: Totalling,
     totals_id: u64,
@@ -225,7 +200,6 @@ impl Drop for Selector {
     /// The run that follows the selector needs the disk, and a walk for a pane nobody sees
     /// anymore would compete with it.
     fn drop(&mut self) {
-        self.preview_stop.store(true, Ordering::Relaxed);
         self.totals_stop.store(true, Ordering::Relaxed);
     }
 }
@@ -247,6 +221,7 @@ impl Selector {
             dir,
             entries: Vec::new(),
             marked: BTreeSet::new(),
+            pane: PreviewPane::new(Arc::clone(&guard), "marking it destroys"),
             guard,
             filter: String::new(),
             filtering: false,
@@ -257,10 +232,6 @@ impl Selector {
             read_error: None,
             refusal: None,
             confirmed: false,
-            previewed: None,
-            preview: None,
-            preview_id: 0,
-            preview_stop: Arc::new(AtomicBool::new(false)),
             marks_changed: false,
             totals: Totalling::Nothing,
             totals_id: 0,
@@ -393,20 +364,10 @@ impl Selector {
     /// and the totals when the marked set changed. Each stops the read of its kind before it.
     pub fn work(&mut self) -> Vec<Work> {
         let mut work = Vec::new();
-        let current = self.selected().map(|entry| entry.path.clone());
-        if !self.loading && current != self.previewed {
-            self.preview_stop.store(true, Ordering::Relaxed);
-            self.preview_stop = Arc::new(AtomicBool::new(false));
-            self.preview_id += 1;
-            self.preview = None;
-            self.previewed.clone_from(&current);
-            if let Some(path) = current {
-                work.push(Work::Preview {
-                    id: self.preview_id,
-                    path,
-                    guard: Arc::clone(&self.guard),
-                    stop: Arc::clone(&self.preview_stop),
-                });
+        if !self.loading {
+            let current = self.selected().map(|entry| entry.path.clone());
+            if let Some(request) = self.pane.follow(current.as_deref()) {
+                work.push(Work::Preview(request));
             }
         }
         if self.marks_changed {
@@ -432,10 +393,7 @@ impl Selector {
     /// Takes what a piece of work found, unless newer work of its kind replaced it.
     pub fn finished(&mut self, finished: Finished) {
         match finished {
-            Finished::Preview {
-                id,
-                preview: Some(found),
-            } if id == self.preview_id => self.preview = Some(found),
+            Finished::Preview(result) => self.pane.finished(result),
             Finished::Totals {
                 id,
                 totals: Some(found),
@@ -628,50 +586,11 @@ impl Selector {
     }
 
     fn draw_preview(&self, buffer: &mut Buffer, area: Rect) {
-        // The frame's two rules and a cell of indent either side.
-        let width = area.width.saturating_sub(4);
-        let lines = self.preview_lines(width);
-        draw_text_panel(buffer, area, PREVIEW_TITLE, &lines);
-    }
-
-    fn preview_lines(&self, width: u16) -> Vec<(String, Color)> {
-        let failure = |message: String| {
-            wrap(&format!("{FAILED_MARK} {message}"), width)
-                .into_iter()
-                .map(|line| (line, LOVE))
-                .collect()
+        let pending = match self.selected() {
+            Some(entry) if entry.is_dir => "counting",
+            _ => "reading",
         };
-        let Some(found) = &self.preview else {
-            let reading = match self.selected() {
-                None => return Vec::new(),
-                Some(entry) if entry.is_dir => "counting",
-                Some(_) => "reading",
-            };
-            return vec![(reading.to_owned(), MUTED)];
-        };
-        match found {
-            Preview::Text(lines) if lines.is_empty() => vec![("empty file".to_owned(), MUTED)],
-            Preview::Text(lines) => lines.iter().map(|line| (line.clone(), TEXT)).collect(),
-            Preview::Binary(head) => hex_dump(head, width),
-            Preview::Directory(totals) => {
-                std::iter::once(("marking it destroys".to_owned(), MUTED))
-                    // A count cut to fit reads as a smaller one, so a part that does not fit whole is
-                    // left out.
-                    .chain(
-                        totals_parts(totals)
-                            .into_iter()
-                            .filter(|part| cells(part) <= width)
-                            .map(|part| (part, TEXT)),
-                    )
-                    .collect()
-            }
-            Preview::Symlink(target) => std::iter::once(("symlink to".to_owned(), MUTED))
-                .chain(wrap(target, width).into_iter().map(|line| (line, TEXT)))
-                .collect(),
-            Preview::Special(kind) => vec![(format!("{kind}, never opened"), TEXT)],
-            Preview::Refused(refusal) => failure(refusal.clone()),
-            Preview::Unreadable(error) => failure(format!("cannot read: {error}")),
-        }
+        self.pane.draw(buffer, area, pending);
     }
 
     fn draw_listing(&mut self, buffer: &mut Buffer, area: Rect) {
@@ -708,57 +627,4 @@ impl Selector {
             });
         draw_panel(buffer, area, &title, lines, shown.len(), self.first);
     }
-}
-
-/// The kinds a run would destroy, those with none left out, then the size, then the directories
-/// that would survive because nobody could list them.
-fn totals_parts(totals: &Totals) -> Vec<String> {
-    let mut parts: Vec<String> = [
-        (totals.files, "file", "files"),
-        (
-            totals.removals,
-            "symlink or special file",
-            "symlinks and special files",
-        ),
-        (totals.directories, "directory", "directories"),
-    ]
-    .into_iter()
-    .filter(|(count, _, _)| *count > 0)
-    .map(|(count, one, many)| counted(count, one, many))
-    .collect();
-    parts.push(short_size(totals.bytes));
-    if totals.unreadable > 0 {
-        let many = "unreadable directories";
-        parts.push(counted(totals.unreadable, "unreadable directory", many));
-    }
-    parts
-}
-
-/// The head of a binary file, as many bytes a line as the width holds, each line an offset, the
-/// bytes in hex, and the printable ones as text.
-fn hex_dump(head: &[u8], width: u16) -> Vec<(String, Color)> {
-    let per_line =
-        (width.saturating_sub(HEX_OVERHEAD) / HEX_CELLS_PER_BYTE).clamp(1, HEX_MOST_BYTES);
-    head.chunks(usize::from(per_line))
-        .enumerate()
-        .map(|(index, chunk)| {
-            let hex: Vec<String> = chunk.iter().map(|byte| format!("{byte:02x}")).collect();
-            let text: String = chunk
-                .iter()
-                .map(|&byte| {
-                    if byte.is_ascii_graphic() || byte == b' ' {
-                        char::from(byte)
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            let offset = index * usize::from(per_line);
-            let columns = usize::from(per_line) * 3 - 1;
-            (
-                format!("{offset:04x}  {:<columns$}  {text}", hex.join(" ")),
-                TEXT,
-            )
-        })
-        .collect()
 }

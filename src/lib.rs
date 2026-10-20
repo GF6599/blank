@@ -3,6 +3,7 @@ pub mod engine;
 pub mod guard;
 pub mod manifest;
 mod overwrite;
+pub mod pane;
 pub mod plan;
 pub mod preview;
 pub mod question;
