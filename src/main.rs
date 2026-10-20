@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use blank::guard::Guard;
 use blank::plan::Plan;
+use blank::question::confirm;
 use clap::{CommandFactory, Parser};
 
 const VERSION: &str = concat!(
@@ -26,6 +27,10 @@ struct Cli {
     /// List what would be destroyed and destroy nothing
     #[arg(long)]
     dry_run: bool,
+
+    /// Destroy without asking first
+    #[arg(short, long)]
+    yes: bool,
 }
 
 fn main() -> ExitCode {
@@ -52,6 +57,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             Some(incomplete) => Err(incomplete.to_string().into()),
             None => Ok(()),
         };
+    }
+    // Nothing to destroy is not worth a question.
+    if !cli.yes && plan.total() > 0 {
+        let confirmed = confirm(&mut io::stdin().lock(), &mut io::stdout().lock(), &plan)?;
+        if !confirmed {
+            // An error rather than a clean exit, because exit zero is what this command says
+            // when everything was destroyed.
+            return Err("cancelled, nothing was destroyed".into());
+        }
     }
     Err("this build cannot destroy anything yet; pass --dry-run to see the plan".into())
 }

@@ -126,18 +126,28 @@ fn control_characters_in_a_name_are_escaped() {
 
 /// No arguments and no terminal is a usage question.
 ///
-/// Given: nothing on the command line and a pipe on standard input.
-/// When: the run starts.
+/// Given: no paths on the command line and a pipe on standard input.
+/// When: the run starts, bare and with --yes.
 /// Then: it prints the usage, naming the dry run, and exits zero.
 ///
 /// Why it matters: a script that calls blank with no arguments must get an answer, not a wait.
 #[test]
 fn no_arguments_prints_the_usage() {
-    // When:
-    let outcome = run(&[]);
+    for args in [&[][..], &["--yes"]] {
+        // When:
+        let outcome = run(args);
 
-    // Then:
-    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
-    assert!(outcome.stdout.contains("Usage:"), "{}", outcome.stdout);
-    assert!(outcome.stdout.contains("--dry-run"), "{}", outcome.stdout);
+        // Then:
+        assert_eq!(outcome.code, 0, "{args:?}: {}", outcome.stderr);
+        assert!(
+            outcome.stdout.contains("Usage:"),
+            "{args:?}: {}",
+            outcome.stdout
+        );
+        assert!(
+            outcome.stdout.contains("--dry-run"),
+            "{args:?}: {}",
+            outcome.stdout
+        );
+    }
 }
