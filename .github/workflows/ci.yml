@@ -18,13 +18,25 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04
+    # The engine opens and renames through a different system call on each
+    # platform, so a pass on one says nothing about the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      # rustup on the runner image reads rust-toolchain.toml at the first cargo
+      # call, so only cargo-deny needs installing. The action checks the binary
+      # against the hash in its manifest.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-deny@0.20.2
 
       # The one gate. A laptop runs the same recipe, so CI and a commit cannot
       # disagree about what passing means.

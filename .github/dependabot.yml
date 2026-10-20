@@ -30,3 +30,15 @@ updates:
         update-types:
           - minor
           - patch
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
