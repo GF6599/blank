@@ -123,14 +123,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    // Nothing to destroy is not worth a question.
+    // Nothing to destroy is not worth a question. On a terminal the review screen asks it, with
+    // every target and its preview in view, and a script answers it on standard input.
     if !cli.yes && plan.total() > 0 {
-        let confirmed = confirm(
-            &mut io::stdin().lock(),
-            &mut io::stdout().lock(),
-            &plan,
-            cli.passes,
-        )?;
+        let confirmed = if headless {
+            confirm(
+                &mut io::stdin().lock(),
+                &mut io::stdout().lock(),
+                &plan,
+                cli.passes,
+            )?
+        } else {
+            screen::review(&plan, Arc::clone(&guard), cli.passes)?
+        };
         if !confirmed {
             // An error rather than a clean exit, because exit zero is what this command says
             // when everything was destroyed.

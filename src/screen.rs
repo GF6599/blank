@@ -17,6 +17,7 @@ use ratatui::crossterm::terminal::{
 use crate::engine::{Options, Stage, Update, destroy};
 use crate::guard::Guard;
 use crate::plan::{Incomplete, Plan};
+use crate::review::{Answer, Review};
 use crate::selector::{Finished, LoadRequest, Loaded, Pick, Selector, Work};
 use crate::view::{Action, Outcome, RunView};
 
@@ -249,4 +250,38 @@ pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
 enum Read {
     Loaded(Loaded),
     Finished(Finished),
+}
+
+/// Shows the review of `plan` and returns whether the operator typed yes and pressed enter.
+/// Every other way out of the screen destroys nothing.
+pub fn review(plan: &Plan, guard: Arc<Guard>, passes: u32) -> io::Result<bool> {
+    let mut screen = FullScreen::enter()?;
+    let mut review = Review::new(plan, guard, passes);
+    let (sender, receiver) = mpsc::channel();
+    loop {
+        for result in receiver.try_iter() {
+            review.finished(result);
+        }
+        if let Some(request) = review.work() {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(request.run());
+            });
+        }
+        screen.0.draw(|frame| review.draw(frame))?;
+        if !event::poll(FRAME)? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match review.key(key) {
+            Answer::Waiting => {}
+            Answer::Destroy => return Ok(true),
+            Answer::Quit => return Ok(false),
+        }
+    }
 }

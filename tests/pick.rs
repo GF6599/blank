@@ -13,16 +13,17 @@ fn blank_in(dir: &Path) -> Command {
     command
 }
 
-/// Marked targets go to the same question and the same run as a command line.
+/// Marked targets go to the same review and the same run as a command line.
 ///
 /// Given: a directory holding two files, and blank started there with no arguments.
-/// When: the operator marks the first file, chooses done, answers yes, and closes the run.
+/// When: the operator marks the first file, chooses done, answers yes on the review, and closes
+/// the run.
 /// Then: the process exits zero, the marked file is gone, and the other is still there.
 ///
 /// Why it matters: the selector is a way to write a command line, so what it hands over must
-/// pass the same question and reach the same run, and nothing it did not mark may be touched.
+/// pass the same review and reach the same run, and nothing it did not mark may be touched.
 #[test]
-fn the_marked_set_goes_through_the_question_to_the_run() {
+fn the_marked_set_goes_through_the_review_to_the_run() {
     // Given:
     let root = tempfile::tempdir().unwrap();
     let marked = root.path().join("a.txt");
@@ -36,7 +37,7 @@ fn the_marked_set_goes_through_the_question_to_the_run() {
         [
             ("marked", Respond::Keys(" ")),
             ("*", Respond::Keys("\r")),
-            ("Type yes to continue", Respond::Keys("yes\n")),
+            ("press enter to destroy", Respond::Keys("yes\r")),
             ("complete", Respond::Keys("q")),
         ],
     );
