@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::ffi::c_int;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -9,8 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use blank::engine::{DEFAULT_JOBS, DEFAULT_PASSES, Options, Stage, Update, destroy};
 use blank::guard::Guard;
 use blank::manifest::Manifest;
-use blank::plan::Plan;
+use blank::plan::{Incomplete, Plan};
 use blank::question::confirm;
+use blank::screen;
 use blank::terminal::escape_path;
 use clap::{CommandFactory, Parser};
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
@@ -51,6 +52,11 @@ struct Cli {
     /// a manifest of what was on the disk
     #[arg(long)]
     log: Option<PathBuf>,
+
+    /// Turn off the full screen and print one line per target to stdout. A run whose input or
+    /// output is not a terminal is headless anyway
+    #[arg(long)]
+    no_ui: bool,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -134,28 +140,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         jobs: cli.jobs,
         passes: cli.passes,
     };
-    let mut out = io::stdout().lock();
-    let mut percent = None;
-    let report = destroy(&plan, options, &STOP, &mut |update| match update {
-        // A closed standard output must not stop a run the operator confirmed halfway through a
-        // tree. The report on standard error, the manifest and the exit code are the record.
-        Update::Target { verb, path, stage } => {
-            if stage == Stage::Start {
-                let _ = writeln!(out, "Activity: {verb} {}", escape_path(path));
-            }
-            if let (Some(manifest), Stage::Done) = (&mut manifest, stage) {
-                manifest.destroyed(path);
-            }
+    let mut record = |update: &Update<'_>| {
+        if let (Some(manifest), Update::Target { path, stage, .. }) = (&mut manifest, update)
+            && *stage == Stage::Done
+        {
+            manifest.destroyed(path);
         }
-        // Truncated rather than rounded, so 100% is printed only when the run is complete.
-        Update::Progress { done, total } => {
-            let now = u128::from(done) * 100 / u128::from(total);
-            if percent != Some(now) {
-                percent = Some(now);
-                let _ = writeln!(out, "Progress: {now}%");
-            }
-        }
-    });
+    };
+    // A pipe or a file on either end means a script, which reads lines and cannot answer keys.
+    let headless = cli.no_ui || !io::stdin().is_terminal() || !io::stdout().is_terminal();
+    let (report, interface) = if headless {
+        (run_headless(&plan, options, &mut record), Ok(()))
+    } else {
+        let ended = screen::show(&plan, options, &STOP, &mut record)
+            .map_err(|error| format!("open the interface: {error}. Nothing was destroyed"))?;
+        // The full screen is gone, so this line is the record of the run in the scrollback.
+        let _ = writeln!(io::stdout(), "{}", ended.outcome.verdict());
+        (ended.report, ended.interface)
+    };
     let logged = manifest.map_or(Ok(()), |mut manifest| {
         if let Err(incomplete) = &report {
             manifest.survivors(incomplete);
@@ -164,6 +166,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     });
     // A failed log must not hide the survivors, so the report names both.
     let errors: Vec<String> = [
+        interface
+            .err()
+            .map(|error| format!("the interface failed, so the run was stopped: {error}")),
         report.err().map(|incomplete| incomplete.to_string()),
         logged.err().map(|error| format!("write the log: {error}")),
     ]
@@ -175,4 +180,34 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     } else {
         Err(errors.join("\n").into())
     }
+}
+
+fn run_headless(
+    plan: &Plan,
+    options: Options,
+    record: &mut dyn FnMut(&Update<'_>),
+) -> Result<(), Incomplete> {
+    let mut out = io::stdout().lock();
+    let mut percent = None;
+    destroy(plan, options, &STOP, &mut |update| {
+        record(&update);
+        match update {
+            // A closed standard output must not stop a run the operator confirmed halfway
+            // through a tree. The report on standard error, the manifest and the exit code are
+            // the record.
+            Update::Target { verb, path, stage } => {
+                if stage == Stage::Start {
+                    let _ = writeln!(out, "Activity: {verb} {}", escape_path(path));
+                }
+            }
+            // Truncated rather than rounded, so 100% is printed only when the run is complete.
+            Update::Progress { done, total } => {
+                let now = u128::from(done) * 100 / u128::from(total);
+                if percent != Some(now) {
+                    percent = Some(now);
+                    let _ = writeln!(out, "Progress: {now}%");
+                }
+            }
+        }
+    })
 }
