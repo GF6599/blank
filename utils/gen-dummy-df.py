@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-scaffold_fs_testdata.py — Create a rich set of filesystem artifacts for testing.
+gen-dummy-df.py - Create a rich set of filesystem artifacts for testing.
 
 Examples:
-  python3 fs_testdata_scaffold.py --root ./test_fs_data --force
-  python3 fs_testdata_scaffold.py --root ./tmp/data --large-file-size 20 --many-files 500 --depth 8 --force
+  python3 utils/gen-dummy-df.py --root ./test_fs_data --force
+  python3 utils/gen-dummy-df.py --root ./tmp/data --large-file-size 20 --many-files 500 --depth 8 --force
 
 Notes:
 - Designed for POSIX (Linux/macOS). It will gracefully skip features your OS doesn't support

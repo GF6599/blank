@@ -61,8 +61,10 @@ test-race:
 check: fmt-check lint test-race
 	go build ./...
 
-# Generate a dummy tree and run end to end. The tree holds a directory nobody can
-# list, so a working run reports it, leaves it alone, and exits non-zero.
+# The tree holds a directory nobody can list, so a working run reports it,
+# leaves it alone, and exits non-zero.
+
+# Generate a dummy tree and run end to end
 [group('dev')]
 e2e:
 	tmp_dir="$(mktemp -d)"; log_file="$(mktemp)"; \
