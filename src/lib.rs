@@ -1,3 +1,4 @@
+mod chrome;
 pub mod engine;
 pub mod guard;
 pub mod manifest;

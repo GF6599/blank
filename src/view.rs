@@ -5,54 +5,19 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::symbols::border;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use ratatui::style::Style;
 
+use crate::chrome::{
+    CONTROLS_GAP, Column, FOAM, HIGHLIGHT_MED, LOVE, Line, MUTED, PINE, SUBTLE, TEXT, blend, cells,
+    clamp_tail, draw_controls, draw_mark, draw_panel, panel_rows, put, put_within,
+};
 use crate::engine::Stage;
 use crate::plan::Incomplete;
 use crate::terminal::escape_path;
 
-const LOVE: Color = Color::Rgb(0xeb, 0x6f, 0x92);
-const GOLD: Color = Color::Rgb(0xf6, 0xc1, 0x77);
-const PINE: Color = Color::Rgb(0x31, 0x74, 0x8f);
-const FOAM: Color = Color::Rgb(0x9c, 0xcf, 0xd8);
-const IRIS: Color = Color::Rgb(0xc4, 0xa7, 0xe7);
-const TEXT: Color = Color::Rgb(0xe0, 0xde, 0xf4);
-const SUBTLE: Color = Color::Rgb(0x90, 0x8c, 0xaa);
-const MUTED: Color = Color::Rgb(0x6e, 0x6a, 0x86);
-const HIGHLIGHT_MED: Color = Color::Rgb(0x40, 0x3d, 0x52);
-
-/// The one corner lever. Every rule the view draws reads its runes from here.
-const BORDER: border::Set = border::PLAIN;
-
-/// The marker is chrome saying "this one", and the label it marks is the item itself.
-const MARKER: Color = GOLD;
-const MARKED: Color = IRIS;
-
-const PADDING: u16 = 2;
-const MAX_WIDTH: u16 = 80;
-/// Every wording the chrome can show survives this width, and below it nothing is left to cut
-/// that still names the outcome.
-const MIN_CONTENT_WIDTH: u16 = 8;
-
 /// Rows the panel keeps. Every frame draws the rows in view from this history, and the
 /// manifest holds every path for anyone who needs all of them.
 const HISTORY: usize = 200;
-
-/// figlet -f ANSI_Shadow "blank", 6 rows by 42 columns.
-const MARK_ART: [&str; 6] = [
-    "██████╗ ██╗      █████╗ ███╗   ██╗██╗  ██╗",
-    "██╔══██╗██║     ██╔══██╗████╗  ██║██║ ██╔╝",
-    "██████╔╝██║     ███████║██╔██╗ ██║█████╔╝ ",
-    "██╔══██╗██║     ██╔══██║██║╚██╗██║██╔═██╗ ",
-    "██████╔╝███████╗██║  ██║██║ ╚████║██║  ██╗",
-    "╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝",
-];
-const MARK_COLUMNS: u16 = 42;
-/// Below either size the art leaves the panel too few rows, so the word stands in for it.
-const MARK_MIN_HEIGHT: u16 = 22;
-const WORDMARK: &str = "blank";
 
 const PANEL_TITLE: &str = "activity";
 const CONTROLS: [&str; 3] = [
@@ -61,18 +26,7 @@ const CONTROLS: [&str; 3] = [
     "[q] quit",
 ];
 const BAR_MIN_WIDTH: u16 = 10;
-const CONTROLS_GAP: u16 = 2;
 const FILTER_PROMPT: &str = "filter: ";
-
-/// "[ ", the state cell, " ", and " ]".
-const MARKER_CELLS: u16 = 6;
-/// A cell between the left rule and the bracket, which would otherwise weld to it.
-const ROW_INDENT: u16 = 1;
-/// Reserved whether or not the panel scrolls, so no label is cut again at the moment the
-/// history outgrows the panel.
-const SCROLLBAR_CELLS: u16 = 2;
-const SCROLL_THUMB: &str = "█";
-const ELLIPSIS: &str = "...";
 
 /// An ASCII mark, because a target that survived is the one row an operator must be able to
 /// read on any terminal and in any font.
@@ -295,39 +249,21 @@ impl RunView {
     /// Every block shares one content column, so they line up on both edges.
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
-        let width = area
-            .width
-            .saturating_sub(PADDING * 2)
-            .clamp(MIN_CONTENT_WIDTH, MAX_WIDTH)
-            .min(area.width.saturating_sub(PADDING));
-        let x = area.x + PADDING.min(area.width);
-        let mark = if width >= MARK_COLUMNS && area.height >= MARK_MIN_HEIGHT {
-            MARK_ART.len() as u16
-        } else {
-            1
-        };
-        // A blank row, the mark, a blank, the bar, the status, a blank, and the panel.
-        let panel_top = area.y + 1 + mark + 1 + 2 + 1;
-        let panel_height = area.bottom().saturating_sub(panel_top);
+        let column = Column::of(area);
         let buffer = frame.buffer_mut();
-        self.draw_mark(buffer, x, area.y + 1, width, mark);
+        let mark = draw_mark(buffer, column, area.y + 1, area.height);
+        // A blank row, the mark, a blank, the bar, the status, a blank, and the panel.
         let bar_row = area.y + 1 + mark + 1;
-        self.draw_bar(buffer, x, bar_row, width);
-        let cursor = self.draw_status(buffer, x, bar_row + 1, width);
-        self.draw_panel(buffer, Rect::new(x, panel_top, width, panel_height));
+        self.draw_bar(buffer, column.x, bar_row, column.width);
+        let cursor = self.draw_status(buffer, column.x, bar_row + 1, column.width);
+        let panel_top = bar_row + 3;
+        let panel_height = area.bottom().saturating_sub(panel_top);
+        self.draw_panel(
+            buffer,
+            Rect::new(column.x, panel_top, column.width, panel_height),
+        );
         if let Some(cursor) = cursor {
             frame.set_cursor_position(cursor);
-        }
-    }
-
-    fn draw_mark(&self, buffer: &mut Buffer, x: u16, y: u16, width: u16, rows: u16) {
-        let style = Style::new().fg(MARKED);
-        if rows == 1 {
-            put_within(buffer, x, y, WORDMARK, usize::from(width), style);
-            return;
-        }
-        for (offset, line) in (0..).zip(MARK_ART) {
-            put_within(buffer, x, y + offset, line, usize::from(width), style);
         }
     }
 
@@ -354,21 +290,7 @@ impl RunView {
         }
         put(buffer, x + track, y, &percent, Style::new().fg(SUBTLE));
         if let Some(controls) = controls {
-            let first = x + width - cells(controls);
-            for (column, character) in (first..).zip(controls.chars()) {
-                let color = if matches!(character, '[' | ']') {
-                    MARKER
-                } else {
-                    MUTED
-                };
-                put(
-                    buffer,
-                    column,
-                    y,
-                    character.to_string(),
-                    Style::new().fg(color),
-                );
-            }
+            draw_controls(buffer, Column { x, width }, y, controls);
         }
     }
 
@@ -411,85 +333,25 @@ impl RunView {
     }
 
     fn draw_panel(&mut self, buffer: &mut Buffer, area: Rect) {
-        if area.height < 3 || area.width < 2 {
-            self.panel_rows = 1;
-            return;
-        }
-        let border_style = Style::new().fg(HIGHLIGHT_MED);
+        self.panel_rows = panel_rows(area);
         let heading = self.heading();
-        put(
-            buffer,
-            area.x,
-            area.y,
-            frame_top(area.width, &heading),
-            border_style,
-        );
-        let body = area.height - 2;
-        self.panel_rows = usize::from(body);
         let shown = self.shown();
         let first = self.first_in_view();
         let newest = self.rows.len().checked_sub(1);
-        let inner = area.width - 2;
-        let row_width = inner.saturating_sub(SCROLLBAR_CELLS + ROW_INDENT);
-        let thumb = scrollbar(usize::from(body), shown.len(), first);
-        for line in 0..body {
-            let y = area.y + 1 + line;
-            put(buffer, area.x, y, BORDER.vertical_left, border_style);
-            put(
-                buffer,
-                area.right() - 1,
-                y,
-                BORDER.vertical_right,
-                border_style,
-            );
-            if let Some(&(index, row)) = shown.get(first + usize::from(line)) {
-                let current = Some(index) == newest && self.report.is_none();
-                self.draw_row(buffer, area.x + 1 + ROW_INDENT, y, row_width, row, current);
-            }
-            if thumb.contains(&usize::from(line)) && inner >= SCROLLBAR_CELLS {
-                let column = area.x + 1 + inner - 1;
-                put(buffer, column, y, SCROLL_THUMB, Style::new().fg(MUTED));
-            }
-        }
-        let bottom = format!(
-            "{}{}{}",
-            BORDER.bottom_left,
-            BORDER.horizontal_bottom.repeat(usize::from(inner)),
-            BORDER.bottom_right
-        );
-        put(buffer, area.x, area.bottom() - 1, bottom, border_style);
-    }
-
-    /// The bracket cells and the state cell are drawn on every row and left blank when they
-    /// have nothing to say, so a label never shifts as the marker moves or a target settles.
-    fn draw_row(&self, buffer: &mut Buffer, x: u16, y: u16, width: u16, row: &Row, current: bool) {
-        let (state, state_color) = match row.stage {
-            Stage::Start => (SPINNER[self.spinner], FOAM),
-            Stage::Done => (" ", TEXT),
-            Stage::Failed => (FAILED_MARK, LOVE),
-        };
-        if width < MARKER_CELLS + 1 {
-            put_within(
-                buffer,
-                x,
-                y,
+        let lines = shown.iter().skip(first).map(|&(index, row)| {
+            let (state, state_color) = match row.stage {
+                Stage::Start => (SPINNER[self.spinner], FOAM),
+                Stage::Done => (" ", TEXT),
+                Stage::Failed => (FAILED_MARK, LOVE),
+            };
+            Line {
                 state,
-                usize::from(width),
-                Style::new().fg(state_color),
-            );
-            return;
-        }
-        let inner = width - MARKER_CELLS;
-        let (lead, tail, label_color) = if current {
-            ("[", "]", MARKED)
-        } else {
-            (" ", " ", TEXT)
-        };
-        let label = clamp_tail(&row.text, inner, ELLIPSIS);
-        put(buffer, x, y, lead, Style::new().fg(MARKER));
-        put(buffer, x + 2, y, state, Style::new().fg(state_color));
-        put(buffer, x + 4, y, &label, Style::new().fg(label_color));
-        put(buffer, x + width - 1, y, tail, Style::new().fg(MARKER));
+                state_color,
+                label: &row.text,
+                current: Some(index) == newest && self.report.is_none(),
+            }
+        });
+        draw_panel(buffer, area, &heading, lines, shown.len(), first);
     }
 
     /// A filtered panel looks exactly like a short run, so the heading carries the filter and
@@ -505,89 +367,4 @@ impl RunView {
             self.rows.len()
         )
     }
-}
-
-/// The top rule with the title cut in. The gap after the title is budgeted before the title
-/// is admitted, so a title that only just fits cannot weld itself to the corner.
-fn frame_top(width: u16, title: &str) -> String {
-    let width = usize::from(width);
-    let rule = |count: usize| BORDER.horizontal_top.repeat(count);
-    // The corners, the lead rune, a cell either side of the title, and one cell of fill.
-    let overhead = 2 + 1 + 1 + title.width() + 1 + 1;
-    if title.is_empty() || width < overhead {
-        return format!("{}{}{}", BORDER.top_left, rule(width - 2), BORDER.top_right);
-    }
-    format!(
-        "{}{} {title} {}{}",
-        BORDER.top_left,
-        rule(1),
-        rule(width - overhead + 1),
-        BORDER.top_right
-    )
-}
-
-/// The rows of the panel that carry the thumb. The travel is the distance the panel can
-/// scroll, so the thumb reaches the last row when the newest row is in view.
-fn scrollbar(height: usize, total: usize, first: usize) -> std::ops::Range<usize> {
-    if total <= height || height == 0 {
-        return 0..0;
-    }
-    let thumb = (height * height / total).max(1);
-    let first = first.min(total - height);
-    let top = first * (height - thumb) / (total - height);
-    top..top + thumb
-}
-
-/// The end of a label, because the filename identifies a target and its leading directories
-/// rarely do. Counted in cells, because a wide character is one character and two cells.
-fn clamp_tail(text: &str, width: u16, prefix: &str) -> String {
-    let width = usize::from(width);
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    let prefix = if width > prefix.width() { prefix } else { "" };
-    let mut kept = Vec::new();
-    let mut used = prefix.width();
-    for character in text.chars().rev() {
-        let cell = character.width().unwrap_or(0);
-        if used + cell > width {
-            break;
-        }
-        used += cell;
-        kept.push(character);
-    }
-    prefix.chars().chain(kept.into_iter().rev()).collect()
-}
-
-fn cells(text: &str) -> u16 {
-    u16::try_from(text.width()).unwrap_or(u16::MAX)
-}
-
-fn blend(from: Color, to: Color, share: f64) -> Color {
-    let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (from, to) else {
-        return from;
-    };
-    let mix = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * share).round() as u8;
-    Color::Rgb(mix(r1, r2), mix(g1, g2), mix(b1, b2))
-}
-
-/// Writes `text` at a cell, and nothing when the cell lies outside the screen. The rows above
-/// the panel sit at fixed offsets, so a short terminal puts some of them below its last row.
-fn put(buffer: &mut Buffer, x: u16, y: u16, text: impl AsRef<str>, style: Style) -> (u16, u16) {
-    put_within(buffer, x, y, text, usize::MAX, style)
-}
-
-fn put_within(
-    buffer: &mut Buffer,
-    x: u16,
-    y: u16,
-    text: impl AsRef<str>,
-    width: usize,
-    style: Style,
-) -> (u16, u16) {
-    let area = buffer.area;
-    if y >= area.bottom() || x >= area.right() {
-        return (x, y);
-    }
-    buffer.set_stringn(x, y, text, width, style)
 }
