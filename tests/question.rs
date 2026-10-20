@@ -118,21 +118,24 @@ fn the_question_names_five_roots_and_counts_the_rest() {
     assert!(!shown.contains(text(&files[5])), "{shown}");
 }
 
-/// A run that is refused destroys nothing and does not exit as if it had.
+/// Only the answer decides whether anything is destroyed.
 ///
 /// Given: a tree with a file in it.
-/// When: the run is answered with a no, and again with nothing on standard input.
-/// Then: both exit non-zero and say nothing was destroyed.
+/// When: the run is answered with a no, with nothing on standard input, and with a yes.
+/// Then: the refusals exit non-zero, say nothing was destroyed, and leave the file, and the yes
+/// destroys the tree and exits zero.
 ///
 /// Why it matters: exit zero is what this command says when everything was destroyed, so a
-/// refusal that exits zero reads to a script as a completed run.
+/// refusal that exits zero reads to a script as a completed run, and a refusal that destroys
+/// anything is the one failure the question exists to prevent.
 #[test]
-fn a_refused_run_exits_non_zero() {
-    // Given:
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("victim.txt"), "payload").unwrap();
-
+fn only_the_answer_decides_whether_anything_is_destroyed() {
     for answer in ["no\n", ""] {
+        // Given:
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim.txt");
+        fs::write(&victim, "payload").unwrap();
+
         // When:
         let outcome = run_with(&[text(root.path())], answer, |_| {});
 
@@ -148,25 +151,40 @@ fn a_refused_run_exits_non_zero() {
             "{answer:?}: {}",
             outcome.stderr
         );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            "payload",
+            "{answer:?}"
+        );
     }
+
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("victim.txt"), "payload").unwrap();
+
+    // When:
+    let outcome = run_with(&[text(root.path())], "yes\n", |_| {});
+
+    // Then:
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(root.path().symlink_metadata().is_err());
 }
 
 /// A scripted run skips the question rather than hanging on it.
 ///
 /// Given: a tree with a file in it and nothing on standard input.
 /// When: the run is given --yes, and again -y.
-/// Then: no question is asked, and the run goes on to the destroy step. This build stops there
-/// with its own message, which is the proof the question did not stop it.
+/// Then: no question is asked, the run exits zero, and the tree is gone.
 ///
 /// Why it matters: without a way past the question the command cannot run from a script, and
 /// that is the pressure that gets safety checks removed.
 #[test]
 fn yes_skips_the_question() {
-    // Given:
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("victim.txt"), "payload").unwrap();
-
     for flag in ["--yes", "-y"] {
+        // Given:
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("victim.txt"), "payload").unwrap();
+
         // When:
         let outcome = run(&[flag, text(root.path())]);
 
@@ -176,10 +194,7 @@ fn yes_skips_the_question() {
             "{flag}: {}",
             outcome.stdout
         );
-        assert_eq!(
-            outcome.stderr,
-            "Error: this build cannot destroy anything yet; pass --dry-run to see the plan\n",
-            "{flag}"
-        );
+        assert_eq!(outcome.code, 0, "{flag}: {}", outcome.stderr);
+        assert!(root.path().symlink_metadata().is_err(), "{flag}");
     }
 }

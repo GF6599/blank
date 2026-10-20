@@ -1,8 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::guard::{Guard, Refusal};
@@ -28,23 +29,65 @@ pub struct Plan {
     /// In walk order, each directory before what it holds.
     pub directories: Vec<PathBuf>,
     failures: Vec<Failure>,
+    /// The device and inode of every target as the walk found it. The run checks each one
+    /// again before it acts, so a name later pointed at another file is refused. A file deleted
+    /// and created again under the same name can receive the inode just freed, and passes.
+    identities: HashMap<PathBuf, Identity>,
 }
 
 pub struct Target {
-    pub verb: &'static str,
+    pub kind: Kind,
     pub path: PathBuf,
 }
 
+impl Target {
+    pub fn verb(&self) -> &'static str {
+        self.kind.verb()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Identity {
+    device: u64,
+    inode: u64,
+}
+
+impl Identity {
+    pub(crate) fn new(device: u64, inode: u64) -> Identity {
+        Identity { device, inode }
+    }
+}
+
 #[derive(Clone)]
-struct Failure {
+pub(crate) struct Failure {
     path: PathBuf,
     reason: String,
+    /// A cover landed before the run stopped, so the entry is still on the disk and the
+    /// contents it held are gone. A caller reads an undestroyed target as an intact one,
+    /// and this is the case where that is wrong.
+    damaged: bool,
+}
+
+impl Failure {
+    pub(crate) fn new(path: &Path, reason: String, damaged: bool) -> Failure {
+        Failure {
+            path: path.to_path_buf(),
+            reason,
+            damaged,
+        }
+    }
 }
 
 /// The targets a run did not destroy. The caller believes they are gone, so the report names
 /// them rather than only counting them.
 pub struct Incomplete {
     failures: Vec<Failure>,
+}
+
+impl Incomplete {
+    pub(crate) fn new(failures: Vec<Failure>) -> Incomplete {
+        Incomplete { failures }
+    }
 }
 
 impl fmt::Display for Incomplete {
@@ -58,7 +101,12 @@ impl fmt::Display for Incomplete {
         write!(f, "{count} {noun} {verb} not destroyed")?;
         for failure in self.failures.iter().take(FAILURES_NAMED) {
             let line = format!("{}: {}", failure.path.to_string_lossy(), failure.reason);
-            write!(f, "\n  {} (intact)", escape(&line))?;
+            let state = if failure.damaged {
+                "damaged, the contents are gone"
+            } else {
+                "intact"
+            };
+            write!(f, "\n  {} ({state})", escape(&line))?;
         }
         if count > FAILURES_NAMED {
             write!(f, "\n  and {} more", count - FAILURES_NAMED)?;
@@ -67,10 +115,23 @@ impl fmt::Display for Incomplete {
     }
 }
 
-enum Kind {
+/// How a run destroys a target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
     File,
     Directory,
+    /// A symlink or a special file. It is unlinked and never opened.
     Removal,
+}
+
+impl Kind {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Kind::File => VERB_FILE,
+            Kind::Directory => VERB_DIRECTORY,
+            Kind::Removal => VERB_REMOVAL,
+        }
+    }
 }
 
 impl Plan {
@@ -114,7 +175,10 @@ impl Plan {
                 continue;
             }
             let kind = match classify(&path) {
-                Ok(kind) => kind,
+                Ok((kind, identity)) => {
+                    self.identities.insert(path.clone(), identity);
+                    kind
+                }
                 Err(error) => {
                     self.fail(&path, format!("read path: {error}"));
                     continue;
@@ -139,10 +203,7 @@ impl Plan {
     }
 
     fn fail(&mut self, path: &Path, reason: String) {
-        self.failures.push(Failure {
-            path: path.to_path_buf(),
-            reason,
-        });
+        self.failures.push(Failure::new(path, reason, false));
     }
 
     /// The arguments as absolute paths, each once, in the order they were named.
@@ -157,29 +218,45 @@ impl Plan {
     /// Every target in the order the run reaches it: files, then removals, then directories
     /// deepest first.
     pub fn targets(&self) -> Vec<Target> {
-        let files = self.files.iter().map(|path| (VERB_FILE, path));
-        let removals = self.removals.iter().map(|path| (VERB_REMOVAL, path));
+        let files = self.files.iter().map(|path| (Kind::File, path));
+        let removals = self.removals.iter().map(|path| (Kind::Removal, path));
         let directories = self
             .directories
             .iter()
             .rev()
-            .map(|path| (VERB_DIRECTORY, path));
+            .map(|path| (Kind::Directory, path));
         files
             .chain(removals)
             .chain(directories)
-            .map(|(verb, path)| Target {
-                verb,
+            .map(|(kind, path)| Target {
+                kind,
                 path: path.clone(),
             })
             .collect()
     }
 
+    pub(crate) fn identity(&self, path: &Path) -> Option<Identity> {
+        self.identities.get(path).copied()
+    }
+
+    pub(crate) fn failures(&self) -> &[Failure] {
+        &self.failures
+    }
+
+    /// The directory a run opens by path to reach `target`: the parent of the deepest root
+    /// that holds it. Everything below that directory is reached by descriptor.
+    pub(crate) fn base_of(&self, target: &Path) -> Option<&Path> {
+        self.roots
+            .iter()
+            .filter(|root| target.starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .and_then(|root| root.parent())
+    }
+
     /// What the enumeration could not read, in the shape a run reports what it could not
     /// destroy.
     pub fn incomplete(&self) -> Option<Incomplete> {
-        (!self.failures.is_empty()).then(|| Incomplete {
-            failures: self.failures.clone(),
-        })
+        (!self.failures.is_empty()).then(|| Incomplete::new(self.failures.clone()))
     }
 
     /// Counts what a run would destroy. The dry run and the question read the same wording, so
@@ -201,7 +278,7 @@ impl Plan {
     /// cannot show that a command is aimed at the wrong directory.
     pub fn write_dry_run(&self, out: &mut impl Write) -> io::Result<()> {
         for target in self.targets() {
-            writeln!(out, "{} {}", target.verb, escape_path(&target.path))?;
+            writeln!(out, "{} {}", target.verb(), escape_path(&target.path))?;
         }
         writeln!(out, "Dry run. {}. Nothing was destroyed.", self.summary())
     }
@@ -216,9 +293,11 @@ fn counted(count: usize, singular: &str, plural: &str) -> String {
 }
 
 /// Reads the path once, without following a symlink.
-fn classify(path: &Path) -> io::Result<Kind> {
-    let kind = fs::symlink_metadata(path)?.file_type();
-    Ok(if kind.is_symlink() {
+fn classify(path: &Path) -> io::Result<(Kind, Identity)> {
+    let metadata = fs::symlink_metadata(path)?;
+    let identity = Identity::new(metadata.dev(), metadata.ino());
+    let kind = metadata.file_type();
+    let kind = if kind.is_symlink() {
         Kind::Removal
     } else if kind.is_dir() {
         Kind::Directory
@@ -228,7 +307,8 @@ fn classify(path: &Path) -> io::Result<Kind> {
         // A FIFO, a socket or a device node. The overwrite opens its target, and opening one of
         // these blocks until a peer arrives.
         Kind::Removal
-    })
+    };
+    Ok((kind, identity))
 }
 
 /// The operating system lists a directory in no fixed order, so the names are sorted and two

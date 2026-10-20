@@ -1,11 +1,13 @@
 use std::error::Error;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use blank::engine::{DEFAULT_PASSES, Stage, destroy};
 use blank::guard::Guard;
 use blank::plan::Plan;
 use blank::question::confirm;
+use blank::terminal::escape_path;
 use clap::{CommandFactory, Parser};
 
 const VERSION: &str = concat!(
@@ -31,6 +33,10 @@ struct Cli {
     /// Destroy without asking first
     #[arg(short, long)]
     yes: bool,
+
+    /// Random covers over each file before the final zero cover
+    #[arg(long, default_value_t = DEFAULT_PASSES)]
+    passes: u32,
 }
 
 /// The code a shell reports for a writer that a closed pipe stopped.
@@ -79,5 +85,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             return Err("cancelled, nothing was destroyed".into());
         }
     }
-    Err("this build cannot destroy anything yet; pass --dry-run to see the plan".into())
+    let mut out = io::stdout().lock();
+    let report = destroy(&plan, cli.passes, &mut |event| {
+        if event.stage == Stage::Start {
+            // A closed standard output must not stop a run the operator confirmed halfway
+            // through a tree. The report on standard error and the exit code are the record.
+            let _ = writeln!(out, "Activity: {} {}", event.verb, escape_path(event.path));
+        }
+    });
+    report.map_err(|incomplete| incomplete.to_string().into())
 }

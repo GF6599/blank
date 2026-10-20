@@ -120,7 +120,7 @@ fn targets_carry_the_activity_verbs() {
     let verbs: Vec<(&str, PathBuf)> = enumerate(&[root.path()])
         .targets()
         .into_iter()
-        .map(|target| (target.verb, target.path))
+        .map(|target| (target.verb(), target.path))
         .collect();
 
     // Then:
