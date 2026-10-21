@@ -501,3 +501,37 @@ fn a_text_file_that_starts_like_a_media_header_previews_as_text() {
         assert!(matches!(shown, Preview::Text(_)), "{name}: {shown:?}");
     }
 }
+
+/// An SVG cannot read a file through a coder that blank does not allow.
+///
+/// Given: a text note, and an SVG that draws the note as an image by its path.
+/// When: the SVG is previewed on a machine with magick.
+/// Then: the preview falls back, and the reason says the security policy refused it.
+///
+/// Why it matters: an SVG reaches every coder magick has through a path to a file planted beside
+/// it, and some coders read text, run drawing scripts, or write and delete files.
+#[test]
+fn an_svg_cannot_read_a_file_through_a_coder_blank_does_not_allow() {
+    if !installed("magick") {
+        return;
+    }
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let note = root.path().join("notes.txt");
+    fs::write(&note, "a line of a private note\n").unwrap();
+    let path = root.path().join("drawing.svg");
+    let text = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"300\" height=\"100\"><image xlink:href=\"{}\" width=\"300\" height=\"100\"/></svg>\n",
+        note.display()
+    );
+    fs::write(&path, text).unwrap();
+
+    // When:
+    let shown = look(&path, &Renderer::for_host());
+
+    // Then:
+    let Preview::Undecoded { reason, .. } = shown else {
+        panic!("an SVG that reads a note falls back, not {shown:?}");
+    };
+    assert!(reason.contains("security policy"), "{reason}");
+}

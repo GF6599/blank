@@ -33,6 +33,18 @@ const MAGICK_LIMITS: [&str; 18] = [
 ];
 const MOST_MESSAGE_CHARS: usize = 200;
 const MESSAGES_TAIL_BYTES: u64 = 4096;
+/// The only coders magick may use. An SVG reaches any coder by a path to a file planted beside
+/// it, and some coders read text, run drawing scripts, or write and delete files. MSVG draws
+/// through MVG, and an SVG may embed a PNG, a JPEG or inline data. No delegate runs, so an SVG
+/// never starts Inkscape.
+const MAGICK_POLICY: &str = r#"<policymap>
+  <policy domain="delegate" rights="none" pattern="*"/>
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read" pattern="{MSVG,MVG,HEIC,TTF,OTF,JPEG,INLINE}"/>
+  <policy domain="coder" rights="read|write" pattern="PNG"/>
+</policymap>
+"#;
 /// The ISO base media brands of a HEIF image. Every other brand is a video.
 const HEIF_BRANDS: [&[u8]; 10] = [
     b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1",
@@ -130,7 +142,7 @@ impl Kind {
                 // A coder named on the input makes magick read the file as that kind and no
                 // other, whatever its content claims.
                 let input = match self {
-                    Kind::Svg => "svg:/dev/stdin",
+                    Kind::Svg => "msvg:/dev/stdin",
                     Kind::Heic => "heic:/dev/stdin[0]",
                     _ => "ttf:/dev/stdin",
                 };
@@ -321,6 +333,7 @@ impl State {
             // removes what a killed tool could not.
             .env("TMPDIR", &dir)
             .env("MAGICK_TEMPORARY_PATH", &dir)
+            .env("MAGICK_CONFIGURE_PATH", &dir)
             // Its own group, so a kill reaches every process it started, and the terminal never
             // takes it for the foreground job.
             .process_group(0);
@@ -350,6 +363,10 @@ impl State {
             let dir = base.join(format!("blank-preview-{:016x}", rand::random::<u64>()));
             match DirBuilder::new().mode(0o700).create(&dir) {
                 Ok(()) => {
+                    if let Err(error) = fs::write(dir.join("policy.xml"), MAGICK_POLICY) {
+                        let _ = fs::remove_dir_all(&dir);
+                        return Err(error);
+                    }
                     self.dir = Some(dir.clone());
                     return Ok(dir);
                 }

@@ -351,9 +351,11 @@ These are properties of the current implementation. Each one is reproducible.
   standard input, so no name reaches the tool, and kills it and every process in its
   process group after 5 seconds, on a cursor move, or when the screen closes. `magick` gets bounds on its
   memory, its disk, and the size of an image, so an SVG that claims a huge canvas fails at
-  once. The tools write into a private directory under `$TMPDIR` that blank removes when the
-  screen closes. An SVG can draw any image file that you can read, by its path. ImageMagick
-  7.1.2 refuses an SVG reference to a URL or to another coder, and an older release may not.
+  once. A policy lets `magick` use only the coders a preview needs, and no delegate
+  program, so an SVG cannot reach a text, script or file-writing coder through a file planted
+  beside it. An SVG can still draw a PNG or a JPEG that you can read, by its path.
+  ImageMagick 7.1.2 also refuses an SVG reference to a URL. The tools write into a private
+  directory under `$TMPDIR` that blank removes when the screen closes.
 - **A directory the walk cannot list gets no row and no weight.** It is not in the plan, so
   the activity panel never shows it, and the bar can reach 100% while the status line says
   `blanking failed, 1 target survived`. The error after the screen closes names it as
