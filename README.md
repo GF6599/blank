@@ -105,6 +105,17 @@ told by its first bytes and not by its name) shows as the picture under a captio
 format and its size in pixels. The picture goes through the terminal's graphics protocol,
 kitty, iTerm2 or sixel, and through coloured half-blocks on a terminal with none.
 
+Some kinds need a tool outside blank to become a picture, and each tool is optional:
+
+| Kind | Tool | Picture |
+| --- | --- | --- |
+| PDF | `pdftoppm` (Poppler) | The first page |
+| Video | `ffmpegthumbnailer` | One frame |
+| SVG, HEIC, font | `magick` (ImageMagick 7) | The drawing, the photo, or a sample of the letters |
+
+Without the tool, the entry shows what it showed before, under a line that names the tool to
+install. A tool that runs longer than 5 seconds is stopped, and the pane says so.
+
 The line under the status row totals the whole marked set. From 124 columns a third pane,
 `marked`, takes its place and shows the statistics the review shows: each kind, the bytes
 the files hold and the bytes the covers will write, the five largest files, and the files
@@ -334,6 +345,15 @@ These are properties of the current implementation. Each one is reproducible.
   typed after the screen opens, because the query keeps reading for it. Inside tmux the
   query also turns on `allow-passthrough` for the pane, so the images reach the outer
   terminal.
+- **A PDF, video, SVG, HEIC or font preview runs a tool on an untrusted file.** The tool is
+  outside blank's process and its bounds, and a flaw in it runs with your permissions. blank
+  starts it with an argument list and no shell, gives it the file it already opened as
+  standard input, so no name reaches the tool, and kills it and every process in its
+  process group after 5 seconds, on a cursor move, or when the screen closes. `magick` gets bounds on its
+  memory, its disk, and the size of an image, so an SVG that claims a huge canvas fails at
+  once. The tools write into a private directory under `$TMPDIR` that blank removes when the
+  screen closes. An SVG can draw any image file that you can read, by its path. ImageMagick
+  7.1.2 refuses an SVG reference to a URL or to another coder, and an older release may not.
 - **A directory the walk cannot list gets no row and no weight.** It is not in the plan, so
   the activity panel never shows it, and the bar can reach 100% while the status line says
   `blanking failed, 1 target survived`. The error after the screen closes names it as
