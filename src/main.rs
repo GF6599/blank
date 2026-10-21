@@ -54,8 +54,8 @@ struct Cli {
     #[arg(long)]
     log: Option<PathBuf>,
 
-    /// Destroy a file that has a hard link outside the selection, which destroys the contents
-    /// under that name too
+    /// Destroy a file that has more than one hard link, which destroys the contents under every
+    /// name it has
     #[arg(long)]
     allow_hard_links: bool,
 
