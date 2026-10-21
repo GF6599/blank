@@ -116,7 +116,7 @@ fn open_for_overwrite(
         if identity_of(&stat) != planned {
             return Err(CHANGED.to_owned());
         }
-        if u64::from(stat.st_nlink) > 1 {
+        if stat.st_nlink > 1 {
             return Err(LINKED.to_owned());
         }
     }
@@ -138,7 +138,7 @@ fn open_for_overwrite(
     if identity_of(&stat) != planned {
         return Err(CHANGED.to_owned());
     }
-    if refuse_links && u64::from(stat.st_nlink) > 1 {
+    if refuse_links && stat.st_nlink > 1 {
         return Err(LINKED.to_owned());
     }
     fcntl_setfl(&fd, OFlags::empty()).map_err(|error| format!("clear O_NONBLOCK: {error}"))?;
