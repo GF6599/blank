@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,8 +51,22 @@ fn started(record: &Path) -> ([Pid; 2], PathBuf) {
     (pids, PathBuf::from(fields.next().unwrap()))
 }
 
+/// Whether nothing runs under these process ids. A killed process whose parent died is a zombie
+/// until the process that adopts it reaps it, and on Linux that can be after the test looks.
 fn gone(pids: [Pid; 2]) -> bool {
-    pids.iter().all(|&pid| kill(pid, None) == Err(Errno::ESRCH))
+    pids.iter().all(|&pid| {
+        kill(pid, None) == Err(Errno::ESRCH)
+            || state(pid).is_some_and(|state| state.starts_with('Z'))
+    })
+}
+
+fn state(pid: Pid) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps runs");
+    let state = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!state.is_empty()).then_some(state)
 }
 
 /// A PDF of one page of 200 by 100 points, filled red, with a correct cross-reference table.
