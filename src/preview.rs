@@ -178,21 +178,26 @@ fn decode(mut file: File, size: u64, format: ImageFormat) -> Result<Picture, Str
     file.seek(SeekFrom::Start(0))
         .map_err(|error| format!("cannot read: {error}"))?;
     let mut reader = ImageReader::with_format(BufReader::new(file), format);
-    // The limits would refuse a huge header with a reason that names no size, so the header is
-    // read without them, checked here, and the limits apply to the pixels.
-    reader.no_limits();
-    let mut decoder = reader.into_decoder().map_err(cannot_decode)?;
-    let (width, height) = decoder.dimensions();
-    if decoder.total_bytes() > MAX_DECODED_BYTES {
-        return Err(format!(
-            "the image is {width} × {height}, larger than the {} a preview decodes",
-            short_size(MAX_DECODED_BYTES)
-        ));
-    }
+    // The header holds more than a size: a compressed colour profile or text inflates while it
+    // is read, so the limits apply from the first byte.
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_DECODED_BYTES);
-    decoder.set_limits(limits).map_err(cannot_decode)?;
-    let image = DynamicImage::from_decoder(decoder).map_err(cannot_decode)?;
+    reader.limits(limits);
+    let decoder = match reader.into_decoder() {
+        Ok(decoder) => decoder,
+        Err(ImageError::Limits(_)) => return Err(too_large()),
+        Err(error) => return Err(cannot_decode(error)),
+    };
+    let (width, height) = decoder.dimensions();
+    // A decoder that does not count its allocations against the limit still has to fit here.
+    if decoder.total_bytes() > MAX_DECODED_BYTES {
+        return Err(format!("the image is {width} × {height}, {}", too_large()));
+    }
+    let image = match DynamicImage::from_decoder(decoder) {
+        Ok(image) => image,
+        Err(ImageError::Limits(_)) => return Err(too_large()),
+        Err(error) => return Err(cannot_decode(error)),
+    };
     let image = if width.max(height) > PREVIEW_IMAGE_SIDE {
         image.thumbnail(PREVIEW_IMAGE_SIDE, PREVIEW_IMAGE_SIDE)
     } else {
@@ -204,6 +209,13 @@ fn decode(mut file: File, size: u64, format: ImageFormat) -> Result<Picture, Str
         height,
         image,
     })
+}
+
+fn too_large() -> String {
+    format!(
+        "larger than the {} a preview decodes",
+        short_size(MAX_DECODED_BYTES)
+    )
 }
 
 fn cannot_decode(error: ImageError) -> String {
