@@ -51,13 +51,21 @@ fn started(record: &Path) -> ([Pid; 2], PathBuf) {
     (pids, PathBuf::from(fields.next().unwrap()))
 }
 
-/// Whether nothing runs under these process ids. A killed process whose parent died is a zombie
-/// until the process that adopts it reaps it, and on Linux that can be after the test looks.
-fn gone(pids: [Pid; 2]) -> bool {
-    pids.iter().all(|&pid| {
+/// A process started by the tool dies on its own schedule after the kill, and is a zombie until
+/// the process that adopts it reaps it, so a look straight after the kill can still find it.
+fn assert_gone(pids: [Pid; 2]) {
+    let ended = |pid: Pid| {
         kill(pid, None) == Err(Errno::ESRCH)
             || state(pid).is_some_and(|state| state.starts_with('Z'))
-    })
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !pids.iter().all(|&pid| ended(pid)) {
+        if Instant::now() >= deadline {
+            let states: Vec<_> = pids.iter().map(|&pid| (pid, state(pid))).collect();
+            panic!("the tool or a process it started still runs: {states:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn state(pid: Pid) -> Option<String> {
@@ -374,7 +382,7 @@ fn a_tool_that_runs_too_long_is_killed() {
         "{reason}"
     );
     let (pids, _) = started(&record);
-    assert!(gone(pids), "the tool or a process it started still runs");
+    assert_gone(pids);
 }
 
 /// A tool is killed when the cursor leaves its file.
@@ -404,10 +412,11 @@ fn a_tool_is_killed_when_the_cursor_moves_on() {
         stop.store(true, Ordering::Relaxed);
         let stopped = Instant::now();
         let shown = reading.join().unwrap();
+        let after_stop = stopped.elapsed();
 
         // Then:
-        assert!(gone(pids), "the tool or a process it started still runs");
-        (shown, stopped.elapsed())
+        assert_gone(pids);
+        (shown, after_stop)
     });
     assert!(shown.is_none(), "{shown:?}");
     assert!(after_stop < Duration::from_secs(1), "{after_stop:?}");
@@ -441,7 +450,7 @@ fn closing_the_renderer_kills_its_tool_and_removes_its_directory() {
         renderer.close();
 
         // Then:
-        assert!(gone(pids), "the tool or a process it started still runs");
+        assert_gone(pids);
         assert!(!dir.exists(), "{dir:?} is left behind");
         assert!(reading.join().unwrap().is_none());
     });
