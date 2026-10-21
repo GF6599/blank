@@ -80,12 +80,16 @@ pub struct Statistics<'p> {
     pub linked: &'p [PathBuf],
 }
 
+/// What the covers write over files that hold `bytes`: once for each random pass and once for
+/// the zero pass. No time is given, because the speed belongs to the device and a duration
+/// would be a guess, where the byte count is exact.
+pub fn cover_bytes(bytes: u64, passes: u32) -> u64 {
+    bytes.saturating_mul(u64::from(passes) + 1)
+}
+
 impl Statistics<'_> {
-    /// What the covers write: the size of every file, once for each random pass and once for
-    /// the zero pass. No time is given, because the speed belongs to the device and a duration
-    /// would be a guess, where the byte count is exact.
     pub fn cover_bytes(&self, passes: u32) -> u64 {
-        self.bytes.saturating_mul(u64::from(passes) + 1)
+        cover_bytes(self.bytes, passes)
     }
 
     /// The totals the dry run, the question and the review all print, so they read alike.
@@ -99,36 +103,46 @@ impl Statistics<'_> {
             size(self.bytes),
             size(self.cover_bytes(passes)),
         )?;
-        match self.unreadable.len() {
-            0 => {}
-            1 => writeln!(
-                out,
-                "1 directory cannot be read, and it will survive the run."
-            )?,
-            count => writeln!(
-                out,
-                "{count} directories cannot be read, and they will survive the run."
-            )?,
+        for sentence in [
+            unreadable_sentence(self.unreadable.len()),
+            linked_sentence(self.linked.len(), options.allow_hard_links),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            writeln!(out, "{sentence}")?;
         }
-        let (files, verb, pronoun) = match self.linked.len() {
-            0 => return Ok(()),
-            1 => ("1 file".to_owned(), "has", "it"),
-            count => (format!("{count} files"), "have", "them"),
-        };
-        if options.allow_hard_links {
-            writeln!(
-                out,
-                "{files} {verb} more than one name, and covering {pronoun} destroys the \
-                 contents under every name."
-            )
-        } else {
-            writeln!(
-                out,
-                "{files} {verb} more than one name, and the run leaves {pronoun} intact \
-                 unless --allow-hard-links is given."
-            )
-        }
+        Ok(())
     }
+}
+
+pub(crate) fn unreadable_sentence(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 directory cannot be read, and it will survive the run.".to_owned()),
+        count => Some(format!(
+            "{count} directories cannot be read, and they will survive the run."
+        )),
+    }
+}
+
+pub(crate) fn linked_sentence(count: usize, allow_hard_links: bool) -> Option<String> {
+    let (files, verb, pronoun) = match count {
+        0 => return None,
+        1 => ("1 file".to_owned(), "has", "it"),
+        count => (format!("{count} files"), "have", "them"),
+    };
+    Some(if allow_hard_links {
+        format!(
+            "{files} {verb} more than one name, and covering {pronoun} destroys the contents \
+             under every name."
+        )
+    } else {
+        format!(
+            "{files} {verb} more than one name, and the run leaves {pronoun} intact unless \
+             --allow-hard-links is given."
+        )
+    })
 }
 
 /// A byte count in a binary unit, with the exact count beside it once the unit rounds it.

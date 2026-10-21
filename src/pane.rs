@@ -155,10 +155,9 @@ impl PreviewPane {
     }
 }
 
-/// The kinds a run would destroy, those with none left out, then the size, then the directories
-/// that would survive because nobody could list them.
-pub(crate) fn totals_parts(totals: &Totals) -> Vec<String> {
-    let mut parts: Vec<String> = [
+/// The kinds a run would destroy, those with none left out.
+pub(crate) fn kind_parts(totals: &Totals) -> Vec<String> {
+    [
         (totals.files, "file", "files"),
         (
             totals.removals,
@@ -170,7 +169,13 @@ pub(crate) fn totals_parts(totals: &Totals) -> Vec<String> {
     .into_iter()
     .filter(|(count, _, _)| *count > 0)
     .map(|(count, one, many)| counted(count, one, many))
-    .collect();
+    .collect()
+}
+
+/// The kinds a run would destroy, then the size, then the directories that would survive
+/// because nobody could list them.
+pub(crate) fn totals_parts(totals: &Totals) -> Vec<String> {
+    let mut parts = kind_parts(totals);
     parts.push(short_size(totals.bytes));
     if totals.unreadable > 0 {
         let many = "unreadable directories";
