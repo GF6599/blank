@@ -13,6 +13,12 @@ allow = ["Apache-2.0", "MIT", "Unicode-3.0", "Zlib"]
 multiple-versions = "deny"
 skip = [
     { crate = "syn@2", reason = "compile-time only, until derive_more and strum_macros move to syn 3" },
+    { crate = "miniz_oxide@0.8", reason = "png 0.18 pins it while flate2 has moved to 0.9, inside the image decoder" },
+]
+skip-tree = [
+    { crate = "rustix@0.38", reason = "ratatui-image 11 queries the terminal through it, and no release uses rustix 1" },
+    { crate = "rand@0.8", reason = "ratatui-image 11 picks kitty image ids with it, and no release uses rand 0.10" },
+    { crate = "thiserror@1", reason = "ratatui-image 11 derives its errors with it, and no release uses thiserror 2" },
 ]
 
 [sources]
