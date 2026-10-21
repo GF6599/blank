@@ -59,7 +59,7 @@ fn every_screen_spans_the_terminal_less_its_margin() {
         allow_hard_links: false,
     };
     let mut view = RunView::new();
-    let (mut selector, load) = Selector::open(root.path(), Arc::clone(&guard));
+    let (mut selector, load) = Selector::open(root.path(), Arc::clone(&guard), options);
     selector.loaded(load.run());
     let mut review = Review::new(&plan, Arc::clone(&guard), &options);
 

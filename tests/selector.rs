@@ -3,6 +3,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use blank::engine::{DEFAULT_JOBS, Options};
 use blank::guard::Guard;
 use blank::selector::{Pick, Selector};
 use ratatui::Terminal;
@@ -15,9 +16,16 @@ const GOLD: Color = Color::Rgb(0xf6, 0xc1, 0x77);
 const IRIS: Color = Color::Rgb(0xc4, 0xa7, 0xe7);
 const LOVE: Color = Color::Rgb(0xeb, 0x6f, 0x92);
 
+/// Two random passes and the zero pass, so the covers write three times what the files hold.
+const OPTIONS: Options = Options {
+    jobs: DEFAULT_JOBS,
+    passes: 2,
+    allow_hard_links: false,
+};
+
 /// Opens a selector on `dir` and finishes its first load, as the screen would.
 fn open(dir: &Path) -> Selector {
-    let (mut selector, load) = Selector::open(dir, Arc::new(Guard::for_host()));
+    let (mut selector, load) = Selector::open(dir, Arc::new(Guard::for_host()), OPTIONS);
     selector.loaded(load.run());
     settle(&mut selector);
     selector
@@ -992,4 +1000,232 @@ fn a_taller_screen_shows_again_the_entries_a_short_one_scrolled_away() {
 
     // Then:
     assert!(text.contains("file-1.txt"), "{text}");
+}
+
+/// The rows inside the frame whose top rule carries `title`, or nothing when no such frame is
+/// on the screen.
+fn panel(buffer: &Buffer, title: &str) -> Option<Vec<String>> {
+    let rows: Vec<Vec<char>> = lines(buffer)
+        .iter()
+        .map(|line| line.chars().collect())
+        .collect();
+    let cut = format!("┌─ {title} ");
+    let (top, left) = rows.iter().enumerate().find_map(|(y, row)| {
+        let line: String = row.iter().collect();
+        let byte = line.find(&cut)?;
+        Some((y, line[..byte].chars().count()))
+    })?;
+    let right = left
+        + rows[top][left..]
+            .iter()
+            .position(|&cell| cell == '┐')
+            .expect("the top rule closes");
+    Some(
+        rows[top + 1..]
+            .iter()
+            .take_while(|row| row.get(left) == Some(&'│'))
+            .map(|row| {
+                row[left + 1..right]
+                    .iter()
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect(),
+    )
+}
+
+/// A wide selector shows the statistics of the marked set in a pane of their own.
+///
+/// Given: a marked directory that holds a large file, a symlink, a file with a second name
+/// outside it, and a directory nobody can list.
+/// When: the selector is drawn 160 columns wide, and then 100 columns wide.
+/// Then: at 160 a pane titled `marked` counts each kind, the bytes held, the bytes the covers
+/// write, the largest file with its size, the file with two names and the unreadable directory.
+/// At 100 there is no such pane, and the one-line total stands in for it.
+///
+/// Why it matters: the marked set is what the run destroys, and a pane that shows it whole lets
+/// the operator catch a large or shared file while marking, before the review.
+#[test]
+fn a_wide_selector_shows_the_statistics_of_the_marked_set_in_a_pane() {
+    // Given:
+    let root = tree(&[
+        "project/notes.txt",
+        "project/shared.txt",
+        "project/locked/inner.txt",
+    ]);
+    let project = root.path().join("project");
+    fs::write(project.join("big.bin"), vec![0; 300_000]).unwrap();
+    symlink("notes.txt", project.join("link")).unwrap();
+    fs::hard_link(
+        project.join("shared.txt"),
+        root.path().join("second-name.txt"),
+    )
+    .unwrap();
+    let locked = project.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut selector = open(root.path());
+    select(&mut selector, "project");
+    press(&mut selector, KeyCode::Char(' '));
+
+    // When:
+    let wide = render(&mut selector, 160, 40);
+    let narrow = render(&mut selector, 100, 40);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Then:
+    let pane = panel(&wide, "marked").expect("a pane titled marked");
+    let text = pane.join("\n");
+    for expected in [
+        "3 files",
+        "1 symlink or special file",
+        "1 directory",
+        "holds 293.0 KiB",
+        "covers write 878.9 KiB in 3 passes",
+    ] {
+        assert!(
+            pane.iter().any(|row| row == expected),
+            "{expected}:\n{text}"
+        );
+    }
+    assert!(
+        pane.iter()
+            .any(|row| row.starts_with("293.0 KiB") && row.ends_with("big.bin")),
+        "{text}"
+    );
+    // A sentence wraps across rows, so it is read with its rows joined.
+    let prose = pane.join(" ");
+    for expected in [
+        "1 directory cannot be read, and it will survive the run.",
+        "1 file has more than one name, and the run leaves it intact unless \
+         --allow-hard-links is given.",
+    ] {
+        assert!(prose.contains(expected), "{expected}:\n{text}");
+    }
+    assert!(panel(&narrow, "marked").is_none());
+    let narrow_text = lines(&narrow).join("\n");
+    assert!(narrow_text.contains("marked: 3 files"), "{narrow_text}");
+}
+
+/// The statistics pane takes its place once the column holds three panes, and every frame
+/// stays closed on either side of that width.
+///
+/// Given: a selector with one file marked.
+/// When: it is drawn at every width from 100 to 220 columns.
+/// Then: from 124 columns three frames share the top row and below it two do, and every top
+/// corner has the matching bottom corner under it.
+///
+/// Why it matters: three panes squeezed into a narrow column leave none of them readable, and a
+/// split one cell off tears a rule exactly at the width where the third pane arrives.
+#[test]
+fn the_statistics_pane_arrives_once_the_column_holds_three_panes() {
+    // Given:
+    let (_root, mut selector) = project();
+
+    for width in 100..=220 {
+        // When:
+        let screen = render(&mut selector, width, 30);
+
+        // Then:
+        let rows: Vec<Vec<char>> = lines(&screen)
+            .iter()
+            .map(|line| line.chars().collect())
+            .collect();
+        let top = rows
+            .iter()
+            .position(|row| row.contains(&'┌'))
+            .expect("a frame is drawn");
+        let bottom = rows
+            .iter()
+            .rposition(|row| row.contains(&'└'))
+            .expect("a frame closes");
+        let frames = rows[top].iter().filter(|&&cell| cell == '┌').count();
+        assert_eq!(frames, if width >= 124 { 3 } else { 2 }, "{width}");
+        for (x, &cell) in rows[top].iter().enumerate() {
+            let closing = match cell {
+                '┌' => '└',
+                '┐' => '┘',
+                _ => continue,
+            };
+            assert_eq!(rows[bottom].get(x), Some(&closing), "{width} at {x}");
+        }
+        let top_rule: String = rows[top].iter().collect();
+        let between = top_rule.trim().matches("┐ ┌").count();
+        assert_eq!(between, frames - 1, "{width}: {top_rule}");
+    }
+}
+
+/// A selector wide enough for three panes matches the reviewed snapshot.
+///
+/// Given: a small project with one file marked and the cursor on a directory.
+/// When: it is drawn on a terminal of 160 by 30.
+/// Then: every row matches the snapshot reviewed when the layout was set.
+///
+/// Why it matters: the layout is cell exact, and a change of one cell in a rule or a gap is
+/// invisible in a review of the code and obvious on the screen.
+#[test]
+fn a_selector_matches_its_snapshot_with_three_panes() {
+    // Given:
+    let (_root, mut selector) = project();
+
+    // When:
+    let screen = render(&mut selector, 160, 30);
+
+    // Then:
+    let expected = [
+        "",
+        "  ██████╗ ██╗      █████╗ ███╗   ██╗██╗  ██╗",
+        "  ██╔══██╗██║     ██╔══██╗████╗  ██║██║ ██╔╝",
+        "  ██████╔╝██║     ███████║██╔██╗ ██║█████╔╝",
+        "  ██╔══██╗██║     ██╔══██║██║╚██╗██║██╔═██╗",
+        "  ██████╔╝███████╗██║  ██║██║ ╚████║██║  ██╗",
+        "  ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝",
+        "",
+        "  2/4  1 marked                                                                                                           [space] mark  [enter] done  [q] quit",
+        "",
+        "",
+        "TITLE",
+        "  │     archive/                                    │ │ marking it destroys                             │ │ 1 file                                           │",
+        "  │ [   keys/                                    ]  │ │ 1 file                                          │ │ holds 7 bytes                                    │",
+        "  │   * notes.txt                                   │ │ 1 directory                                     │ │ covers write 21 bytes in 3 passes                │",
+        "  │     report-final-v2.pdf                         │ │ 7 bytes                                         │ │                                                  │",
+        "  │                                                 │ │                                                 │ │ largest                                          │",
+        "  │                                                 │ │                                                 │ │ 7 bytes  notes.txt                               │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  │                                                 │ │                                                 │ │                                                  │",
+        "  └─────────────────────────────────────────────────┘ └─────────────────────────────────────────────────┘ └──────────────────────────────────────────────────┘",
+    ];
+    assert_snapshot(&screen, &expected);
+}
+
+/// The statistics pane says so when nothing is marked.
+///
+/// Given: a wide selector with nothing marked.
+/// When: it is drawn.
+/// Then: the pane titled `marked` holds one line, `nothing marked`.
+///
+/// Why it matters: an empty pane reads as a count that has not arrived, and an operator waits
+/// for figures that never come.
+#[test]
+fn the_statistics_pane_says_when_nothing_is_marked() {
+    // Given:
+    let root = tree(&["notes.txt"]);
+    let mut selector = open(root.path());
+
+    // When:
+    let screen = render(&mut selector, 160, 30);
+
+    // Then:
+    let pane = panel(&screen, "marked").expect("a pane titled marked");
+    let filled: Vec<&String> = pane.iter().filter(|row| !row.is_empty()).collect();
+    assert_eq!(filled, ["nothing marked"]);
 }

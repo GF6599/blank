@@ -97,22 +97,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     // A pipe or a file on either end means a script, which reads lines and cannot answer keys.
     let headless = cli.no_ui || !io::stdin().is_terminal() || !io::stdout().is_terminal();
     let guard = Arc::new(Guard::for_host());
+    let options = Options {
+        jobs: cli.jobs,
+        passes: cli.passes,
+        allow_hard_links: cli.allow_hard_links,
+    };
     let paths = if !cli.paths.is_empty() {
         cli.paths.clone()
     } else if headless {
         Cli::command().print_help()?;
         return Ok(());
     } else {
-        let picked = screen::pick(&selector_start(&guard)?, Arc::clone(&guard))?;
+        let picked = screen::pick(&selector_start(&guard)?, Arc::clone(&guard), options)?;
         if picked.is_empty() {
             return Err("cancelled, nothing was destroyed".into());
         }
         picked
-    };
-    let options = Options {
-        jobs: cli.jobs,
-        passes: cli.passes,
-        allow_hard_links: cli.allow_hard_links,
     };
     let plan = Plan::enumerate(&paths, &guard)?;
     if cli.dry_run {

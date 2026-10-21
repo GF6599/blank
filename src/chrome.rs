@@ -52,11 +52,13 @@ const ROW_INDENT: u16 = 1;
 /// listing outgrows the panel.
 const SCROLLBAR_CELLS: u16 = 2;
 const SCROLL_THUMB: &str = "█";
-const ELLIPSIS: &str = "...";
+pub(crate) const ELLIPSIS: &str = "...";
 /// The fewest cells a label keeps beside a detail, which is dropped before the label goes below.
 const DETAIL_LABEL_CELLS: u16 = 8;
 /// Below this column width two panes cannot sit side by side and both stay readable.
 const SIDE_BY_SIDE_WIDTH: u16 = 64;
+/// From this column width a third pane keeps about 40 cells, and so do the two beside it.
+const THREE_PANES_WIDTH: u16 = 120;
 /// Below this height a stacked pane would leave the list above it too few rows to browse.
 const STACKED_HEIGHT: u16 = 10;
 
@@ -181,6 +183,28 @@ pub(crate) fn split_panes(area: Rect) -> (Rect, Option<Rect>) {
     }
 }
 
+/// Splits `area` into three panes side by side, a cell apart, or returns nothing when the area
+/// is too narrow for all three to stay readable.
+pub(crate) fn split_three(area: Rect) -> Option<[Rect; 3]> {
+    if area.width < THREE_PANES_WIDTH {
+        return None;
+    }
+    let inside = area.width - 2;
+    let first = inside / 3;
+    let second = (inside - first) / 2;
+    let third = inside - first - second;
+    Some([
+        Rect::new(area.x, area.y, first, area.height),
+        Rect::new(area.x + first + 1, area.y, second, area.height),
+        Rect::new(area.x + first + second + 2, area.y, third, area.height),
+    ])
+}
+
+/// The cells a line of a text panel in `area` has, inside both rules and their indents.
+pub(crate) fn text_panel_width(area: Rect) -> u16 {
+    area.width.saturating_sub(2 + ROW_INDENT * 2)
+}
+
 /// Draws a frame with `title` cut into its top rule, and `lines` inside it from the top, each
 /// cut to the width of the frame.
 pub(crate) fn draw_text_panel(
@@ -189,10 +213,10 @@ pub(crate) fn draw_text_panel(
     title: &str,
     lines: &[(String, Color)],
 ) {
+    let width = text_panel_width(area);
     let Some(inner) = draw_frame(buffer, area, title) else {
         return;
     };
-    let width = inner.width.saturating_sub(ROW_INDENT * 2);
     for (offset, (text, color)) in (0..inner.height).zip(lines) {
         let shown = clamp_head(text, width);
         put(

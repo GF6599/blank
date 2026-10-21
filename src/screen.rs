@@ -196,9 +196,9 @@ fn next_key(view: &mut RunView) -> io::Result<Action> {
 /// It returns nothing when the operator quit, which is the same answer as marking nothing.
 /// Each directory is read on a thread of its own, so a slow one shows a loading state and every
 /// key still answers.
-pub fn pick(start: &Path, guard: Arc<Guard>) -> io::Result<Vec<PathBuf>> {
+pub fn pick(start: &Path, guard: Arc<Guard>, options: Options) -> io::Result<Vec<PathBuf>> {
     let mut screen = FullScreen::enter()?;
-    let (mut selector, first) = Selector::open(start, guard);
+    let (mut selector, first) = Selector::open(start, guard, options);
     let (sender, receiver) = mpsc::channel();
     let read = {
         let sender = sender.clone();

@@ -13,12 +13,14 @@ use ratatui::style::Style;
 use ratatui::style::Color;
 
 use crate::chrome::{
-    CONTROLS_GAP, Column, LOVE, Line, MUTED, SUBTLE, TEXT, cells, clamp_tail, draw_controls,
-    draw_mark, draw_panel, panel_rows, put, split_panes,
+    CONTROLS_GAP, Column, ELLIPSIS, LOVE, Line, MUTED, SUBTLE, TEXT, cells, clamp_tail,
+    draw_controls, draw_mark, draw_panel, draw_text_panel, panel_rows, put, split_panes,
+    split_three, text_panel_width, wrap,
 };
+use crate::engine::Options;
 use crate::guard::Guard;
-use crate::pane::{PreviewPane, PreviewRequest, PreviewResult, totals_parts};
-use crate::plan::short_size;
+use crate::pane::{PreviewPane, PreviewRequest, PreviewResult, kind_parts, totals_parts};
+use crate::plan::{cover_bytes, linked_sentence, short_size, unreadable_sentence};
 use crate::preview::Totals;
 use crate::terminal::escape_path;
 
@@ -38,6 +40,12 @@ const CONTROLS: [&str; 3] = [
     "[q] quit",
 ];
 const FILTER_PROMPT: &str = "filter: ";
+
+const MARKED_TITLE: &str = "marked";
+const NOTHING_MARKED: &str = "nothing marked";
+const COUNTING: &str = "counting";
+const LARGEST_HEADING: &str = "largest";
+const LARGEST_GAP: u16 = 2;
 
 pub enum Pick {
     None,
@@ -190,6 +198,8 @@ pub struct Selector {
     totals: Totalling,
     totals_id: u64,
     totals_stop: Arc<AtomicBool>,
+    /// The options of the run the marked set goes to, which decide what its covers write.
+    options: Options,
 }
 
 impl Drop for Selector {
@@ -202,7 +212,7 @@ impl Drop for Selector {
 
 impl Selector {
     /// A selector on `dir`, and the read of its first listing.
-    pub fn open(dir: &Path, guard: Arc<Guard>) -> (Selector, LoadRequest) {
+    pub fn open(dir: &Path, guard: Arc<Guard>, options: Options) -> (Selector, LoadRequest) {
         // A relative name of one part has an empty parent, so a selector that kept it could
         // never leave the directory it started in.
         let dir = fs::canonicalize(dir)
@@ -232,6 +242,7 @@ impl Selector {
             totals: Totalling::Nothing,
             totals_id: 0,
             totals_stop: Arc::new(AtomicBool::new(false)),
+            options,
         };
         (selector, load)
     }
@@ -440,21 +451,6 @@ impl Selector {
         let mark = draw_mark(buffer, column, area.y + 1, area.height);
         let status_row = area.y + 1 + mark + 1;
         let cursor = self.draw_status(buffer, column, status_row);
-        // A size cut to fit reads as a smaller number, so a row with no room for a whole
-        // wording stays empty.
-        if let Some((wordings, color)) = self.totals_wordings()
-            && let Some(fits) = wordings
-                .iter()
-                .find(|wording| cells(wording) <= column.width)
-        {
-            put(
-                buffer,
-                column.x,
-                status_row + 1,
-                fits,
-                Style::new().fg(color),
-            );
-        }
         let panes_top = status_row + 3;
         let panes = Rect::new(
             column.x,
@@ -462,7 +458,29 @@ impl Selector {
             column.width,
             area.bottom().saturating_sub(panes_top),
         );
-        self.draw_panes(buffer, panes);
+        if let Some([list, preview, marked]) = split_three(panes) {
+            self.draw_listing(buffer, list);
+            self.draw_preview(buffer, preview);
+            let width = text_panel_width(marked);
+            draw_text_panel(buffer, marked, MARKED_TITLE, &self.statistics_lines(width));
+        } else {
+            // A size cut to fit reads as a smaller number, so a row with no room for a whole
+            // wording stays empty.
+            if let Some((wordings, color)) = self.totals_wordings()
+                && let Some(fits) = wordings
+                    .iter()
+                    .find(|wording| cells(wording) <= column.width)
+            {
+                put(
+                    buffer,
+                    column.x,
+                    status_row + 1,
+                    fits,
+                    Style::new().fg(color),
+                );
+            }
+            self.draw_panes(buffer, panes);
+        }
         if let Some(cursor) = cursor {
             frame.set_cursor_position(cursor);
         }
@@ -551,6 +569,71 @@ impl Selector {
         }
     }
 
+    /// Every line fits `width`, because the panel cuts a longer one, and a size cut short reads
+    /// as a smaller one.
+    fn statistics_lines(&self, width: u16) -> Vec<(String, Color)> {
+        let fitted = |text: &str, color: Color| -> Vec<(String, Color)> {
+            wrap(text, width)
+                .into_iter()
+                .map(|line| (line, color))
+                .collect()
+        };
+        let totals = match &self.totals {
+            Totalling::Nothing => return fitted(NOTHING_MARKED, MUTED),
+            Totalling::Counting => return fitted(COUNTING, MUTED),
+            Totalling::Counted(Err(refusal)) => {
+                return fitted(&format!("{FAILED_MARK} {refusal}"), LOVE);
+            }
+            Totalling::Counted(Ok(totals)) => totals,
+        };
+        let passes = self.options.passes;
+        let covers = passes.saturating_add(1);
+        let noun = if covers == 1 { "pass" } else { "passes" };
+        let mut lines: Vec<(String, Color)> = kind_parts(totals)
+            .into_iter()
+            .flat_map(|part| fitted(&part, TEXT))
+            .collect();
+        lines.extend(fitted(&format!("holds {}", short_size(totals.bytes)), TEXT));
+        let written = short_size(cover_bytes(totals.bytes, passes));
+        lines.extend(fitted(
+            &format!("covers write {written} in {covers} {noun}"),
+            TEXT,
+        ));
+        if !totals.largest.is_empty() {
+            lines.push((String::new(), TEXT));
+            lines.push((LARGEST_HEADING.to_owned(), MUTED));
+            let sizes: Vec<String> = totals
+                .largest
+                .iter()
+                .map(|(_, size)| short_size(*size))
+                .collect();
+            let size_width = sizes.iter().map(|size| cells(size)).max().unwrap_or(0);
+            for ((path, _), size) in totals.largest.iter().zip(&sizes) {
+                let room = width.saturating_sub(size_width + LARGEST_GAP);
+                let shown = path.strip_prefix(&self.dir).unwrap_or(path);
+                let name = clamp_tail(&escape_path(shown), room, ELLIPSIS);
+                let gap = usize::from(size_width + LARGEST_GAP) - cells(size) as usize;
+                lines.push((format!("{size}{}{name}", " ".repeat(gap)), SUBTLE));
+            }
+        }
+        let leaves = [
+            unreadable_sentence(totals.unreadable).map(|sentence| (sentence, LOVE)),
+            linked_sentence(totals.linked, self.options.allow_hard_links).map(|sentence| {
+                let color = if self.options.allow_hard_links {
+                    SUBTLE
+                } else {
+                    LOVE
+                };
+                (sentence, color)
+            }),
+        ];
+        for (sentence, color) in leaves.into_iter().flatten() {
+            lines.push((String::new(), TEXT));
+            lines.extend(fitted(&sentence, color));
+        }
+        lines
+    }
+
     /// The listing and the preview side by side on a wide terminal, one above the other on a
     /// narrow one with the height for both, and the listing alone otherwise.
     fn draw_panes(&mut self, buffer: &mut Buffer, area: Rect) {
@@ -583,7 +666,11 @@ impl Selector {
         }
         // The frame spends two corners, the lead rune, a cell either side of the title, and a
         // cell of fill.
-        let title = clamp_tail(&escape_path(&self.dir), area.width.saturating_sub(6), "...");
+        let title = clamp_tail(
+            &escape_path(&self.dir),
+            area.width.saturating_sub(6),
+            ELLIPSIS,
+        );
         let shown = self.shown();
         let lines = shown
             .iter()

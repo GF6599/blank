@@ -120,6 +120,8 @@ fn a_directory_previews_as_its_totals() {
         directories: 2,
         bytes: 30,
         unreadable: 0,
+        largest: vec![(dir.join("sub").join("b.txt"), 20), (dir.join("a.txt"), 10)],
+        linked: 0,
     };
     assert_eq!(shown, Preview::Directory(expected));
 }

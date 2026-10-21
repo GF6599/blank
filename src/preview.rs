@@ -33,8 +33,8 @@ pub enum Preview {
     Unreadable(String),
 }
 
-/// The counts of a plan, without the paths it holds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The counts of a plan and its largest files, without the rest of the paths it holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub files: usize,
     pub removals: usize,
@@ -42,6 +42,10 @@ pub struct Totals {
     pub bytes: u64,
     /// The directories the walk could not list, which survive a run.
     pub unreadable: usize,
+    /// The largest files, biggest first.
+    pub largest: Vec<(PathBuf, u64)>,
+    /// The files with more than one name.
+    pub linked: usize,
 }
 
 impl Totals {
@@ -52,6 +56,8 @@ impl Totals {
             directories: statistics.directories,
             bytes: statistics.bytes,
             unreadable: statistics.unreadable.len(),
+            largest: statistics.largest.to_vec(),
+            linked: statistics.linked.len(),
         }
     }
 
