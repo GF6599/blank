@@ -46,10 +46,7 @@ pub struct Plan {
     bytes: u64,
     largest: Vec<(PathBuf, u64)>,
     unreadable: Vec<PathBuf>,
-    /// How many names of each file the plan holds. A file with more names than this has a
-    /// hard link outside the selection.
-    names: HashMap<Identity, u64>,
-    /// The files with a hard link outside the selection.
+    /// The files with more than one name.
     linked: Vec<PathBuf>,
 }
 
@@ -78,8 +75,8 @@ pub struct Statistics<'p> {
     /// The directories the walk could not list. Each survives the run with every directory
     /// above it.
     pub unreadable: &'p [PathBuf],
-    /// The files with a hard link outside the selection. The covers write to the file and not
-    /// to a name, so covering one destroys the contents under the outside name too.
+    /// The files with more than one name. The covers write to the file and not to a name, so
+    /// covering one destroys the contents under every other name too, selected or not.
     pub linked: &'p [PathBuf],
 }
 
@@ -121,14 +118,14 @@ impl Statistics<'_> {
         if options.allow_hard_links {
             writeln!(
                 out,
-                "{files} {verb} hard links outside the selection, and covering {pronoun} \
-                 destroys the contents under every name."
+                "{files} {verb} more than one name, and covering {pronoun} destroys the \
+                 contents under every name."
             )
         } else {
             writeln!(
                 out,
-                "{files} {verb} hard links outside the selection, and the run leaves {pronoun} \
-                 intact unless --allow-hard-links is given."
+                "{files} {verb} more than one name, and the run leaves {pronoun} intact \
+                 unless --allow-hard-links is given."
             )
         }
     }
@@ -174,7 +171,7 @@ impl Target {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Identity {
     device: u64,
     inode: u64,
@@ -318,16 +315,6 @@ impl Plan {
                 return Ok(None);
             }
         }
-        plan.linked = plan
-            .files
-            .iter()
-            .filter(|path| {
-                plan.found
-                    .get(*path)
-                    .is_some_and(|found| found.links > plan.names_of(found.identity))
-            })
-            .cloned()
-            .collect();
         Ok(Some(plan))
     }
 
@@ -360,8 +347,8 @@ impl Plan {
             match kind {
                 Kind::File => {
                     self.count_file(&path);
-                    if let Some(found) = self.found.get(&path) {
-                        *self.names.entry(found.identity).or_default() += 1;
+                    if self.found.get(&path).is_some_and(|found| found.links > 1) {
+                        self.linked.push(path.clone());
                     }
                     self.files.push(path);
                 }
@@ -443,11 +430,6 @@ impl Plan {
 
     pub(crate) fn identity(&self, path: &Path) -> Option<Identity> {
         self.found.get(path).map(|found| found.identity)
-    }
-
-    /// How many names of the file with `identity` the plan holds.
-    pub(crate) fn names_of(&self, identity: Identity) -> u64 {
-        self.names.get(&identity).copied().unwrap_or(0)
     }
 
     /// The length of a file as the walk found it, and zero for every other target.

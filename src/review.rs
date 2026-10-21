@@ -64,7 +64,7 @@ struct Row<'p> {
     kind: RowKind,
     /// The size of a file, or of every file under a directory.
     bytes: Option<u64>,
-    /// A file with a hard link outside the selection.
+    /// A file with more than one name.
     linked: bool,
 }
 
@@ -234,13 +234,13 @@ impl<'p> Review<'p> {
             .skip(self.first)
             .take(self.panel_rows)
             .map(|row| {
-                // Without permission the run leaves a file linked outside intact, so it reads
-                // as a survivor. With it, the note stays, because the run destroys the other
-                // names too.
+                // Without permission the run leaves a file with more than one name intact, so it
+                // reads as a survivor. With it, the note stays, because the run destroys the
+                // other names too.
                 let linked = row.linked.then_some(if self.allow_hard_links {
-                    ("linked outside".to_owned(), MUTED)
+                    ("hard-linked".to_owned(), MUTED)
                 } else {
-                    ("linked outside".to_owned(), LOVE)
+                    ("hard-linked".to_owned(), LOVE)
                 });
                 let survives =
                     row.kind == RowKind::Unreadable || (row.linked && !self.allow_hard_links);

@@ -36,8 +36,8 @@ pub struct Options {
     pub jobs: NonZeroUsize,
     /// Random covers over each file before the zero cover.
     pub passes: u32,
-    /// Cover a file that has a hard link outside the selection, which destroys the contents
-    /// under that name too. Without it such a file is left intact and reported.
+    /// Cover a file that has more than one name, which destroys the contents under every name.
+    /// Without it such a file is left intact, its mode included, and reported.
     pub allow_hard_links: bool,
 }
 
@@ -211,7 +211,7 @@ fn work(
                     let _ = sender.send(Message::Covered(index, bytes));
                 },
             };
-            overwrite(parent, name, planned, plan.names_of(planned), &mut covers)
+            overwrite(parent, name, planned, &mut covers)
         });
         let _ = sender.send(Message::Settled(index, result));
     }

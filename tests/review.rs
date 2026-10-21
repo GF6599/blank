@@ -506,7 +506,7 @@ fn a_taller_screen_shows_again_the_rows_a_short_one_scrolled_away() {
 ///
 /// Given: a tree holding a file that has a second hard link outside it.
 /// When: the review is drawn without permission for hard links, and then with it.
-/// Then: without it the row carries a `!` and says it is linked outside, and with it the row
+/// Then: without it the row carries a `!` and says it is hard-linked, and with it the row
 /// keeps the note and loses the `!`.
 ///
 /// Why it matters: the operator cannot see the other names of a file, and the review is where
@@ -542,11 +542,11 @@ fn a_file_linked_outside_the_selection_is_marked() {
 
     // Then:
     assert!(
-        refused.contains('!') && refused.contains("linked outside"),
+        refused.contains('!') && refused.contains("hard-linked"),
         "{refused}"
     );
     assert!(
-        !allowed.contains('!') && allowed.contains("linked outside"),
+        !allowed.contains('!') && allowed.contains("hard-linked"),
         "{allowed}"
     );
 }

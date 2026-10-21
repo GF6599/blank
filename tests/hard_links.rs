@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -67,7 +68,7 @@ fn a_file_with_a_name_outside_the_selection_is_left_intact() {
         .find(|line| line.contains(text(&inside)))
         .unwrap_or_else(|| panic!("{report}"));
     assert!(
-        line.contains("hard link") && line.ends_with("(intact)"),
+        line.contains("more than one name") && line.ends_with("(intact)"),
         "{line}"
     );
     assert_eq!(
@@ -124,16 +125,16 @@ fn with_permission_the_contents_are_destroyed_under_every_name() {
     assert!(fs::read(&elsewhere).unwrap().iter().all(|&byte| byte == 0));
 }
 
-/// A file whose every name is selected is destroyed without permission.
+/// A file with a second name is left intact, even when every name is selected.
 ///
 /// Given: a tree holding a file under two names, both inside the tree.
 /// When: the tree is destroyed without permission for hard links.
-/// Then: the run reports success and both names are gone.
+/// Then: the run reports the file, and both names still read the contents.
 ///
-/// Why it matters: the rule protects names outside the selection, and refusing a file whose
-/// names were all chosen leaves contents the operator asked to destroy.
+/// Why it matters: a count of the selected names can be fooled by a name removed after the plan,
+/// so the rule refuses every file with more than one name, and the flag is the way through.
 #[test]
-fn a_file_whose_every_name_is_selected_is_destroyed() {
+fn a_file_with_a_second_name_is_left_intact_even_when_both_are_selected() {
     // Given:
     let root = tempfile::tempdir().unwrap();
     let first = root.path().join("first.txt");
@@ -145,16 +146,73 @@ fn a_file_whose_every_name_is_selected_is_destroyed() {
     let report = destroyed(&plan_of(&[root.path()]), false);
 
     // Then:
-    assert_eq!(report, Ok(()));
-    assert!(!root.path().exists());
+    assert!(report.is_err());
+    assert_eq!(fs::read_to_string(&first).unwrap(), "contents");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "contents");
 }
 
-/// The dry run names the files with links outside the selection, and the flag destroys them.
+/// A selected name removed after the plan does not let an outside name through.
+///
+/// Given: a file outside the tree, linked into the tree under two names, and planned; then one
+/// of the two names inside the tree is removed.
+/// When: the tree is destroyed without permission for hard links.
+/// Then: the file outside the tree still reads its contents.
+///
+/// Why it matters: a rule that compared the link count with the names it planned would see two
+/// links and two planned names, and cover the outside file through the name that is left.
+#[test]
+fn a_selected_name_removed_after_the_plan_does_not_let_an_outside_name_through() {
+    // Given:
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("victim.txt");
+    fs::write(&victim, "outside").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    fs::hard_link(&victim, root.path().join("a.txt")).unwrap();
+    fs::hard_link(&victim, root.path().join("b.txt")).unwrap();
+    let plan = plan_of(&[root.path()]);
+    fs::remove_file(root.path().join("b.txt")).unwrap();
+
+    // When:
+    let report = destroyed(&plan, false);
+
+    // Then:
+    assert!(report.is_err());
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "outside");
+}
+
+/// A refused file keeps its mode as well as its contents.
+///
+/// Given: a read-only file in the tree with a second name outside it.
+/// When: the tree is destroyed without permission for hard links.
+/// Then: the file still has its read-only mode.
+///
+/// Why it matters: the overwrite widens the mode of a read-only file before it writes, and a
+/// file the run then refuses would be changed although the report calls it intact.
+#[test]
+fn a_refused_file_keeps_its_mode() {
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    // Given:
+    let (root, _outside, inside, elsewhere) = linked_from_outside();
+    fs::set_permissions(&inside, fs::Permissions::from_mode(0o400)).unwrap();
+
+    // When:
+    let report = destroyed(&plan_of(&[root.path()]), false);
+
+    // Then:
+    assert!(report.is_err());
+    let mode = fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o400);
+    fs::set_permissions(&inside, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// The dry run names the files with more than one name, and the flag destroys them.
 ///
 /// Given: a tree holding a file with a hard link outside it.
 /// When: it is dry run, then destroyed with --yes, then destroyed again with
 /// --allow-hard-links.
-/// Then: the dry run says one file has hard links outside the selection, the first run exits
+/// Then: the dry run says one file has more than one name, the first run exits
 /// non-zero with the outside contents intact, and the second exits zero with them gone.
 ///
 /// Why it matters: the operator cannot see the other names of a file, so the dry run is where
@@ -172,8 +230,7 @@ fn the_dry_run_names_linked_files_and_the_flag_destroys_them() {
 
     // Then:
     assert!(
-        dry.stdout
-            .contains("1 file has hard links outside the selection"),
+        dry.stdout.contains("1 file has more than one name"),
         "{}",
         dry.stdout
     );
