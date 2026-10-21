@@ -175,8 +175,9 @@ intact. See "Known limitations".
 ```
 
 The bar weighs a file by the bytes its covers write, plus one unit for the unlink that ends
-it. Only work that finished counts, so the bar reaches 100% only when every target was
-destroyed. The activity panel holds the last 200 rows. Pass `--log <path>` for the full
+it. Only work that finished counts, so a planned target that survives keeps the bar below
+100%. The status line, not the bar, is the verdict. The activity panel holds the last 200
+rows. Pass `--log <path>` for the full
 manifest of a larger run.
 
 | Cell | Meaning |
@@ -315,8 +316,10 @@ These are properties of the current implementation. Each one is reproducible.
   reordering character cannot make one name pass for another. An emoji with a variation
   selector therefore shows the selector as `\u{fe0f}`. A letter from another script that
   looks like a Latin one, such as the Cyrillic `а`, displays as itself.
-- **A directory the walk cannot list gets no row.** The run never reaches it, so the
-  activity panel never shows it. The error after the screen closes names it as `intact`.
+- **A directory the walk cannot list gets no row and no weight.** It is not in the plan, so
+  the activity panel never shows it, and the bar can reach 100% while the status line says
+  `blanking failed, 1 target survived`. The error after the screen closes names it as
+  `intact`.
 - **The selector does not go into a symlink.** It reads a symlink the way the run does, so
   the arrow key does nothing on one. Name the path on the command line to reach what is
   behind it.
