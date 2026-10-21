@@ -24,7 +24,6 @@ pub(crate) const MARKER: Color = GOLD;
 pub(crate) const MARKED: Color = IRIS;
 
 const PADDING: u16 = 2;
-const MAX_WIDTH: u16 = 80;
 /// Every wording the chrome can show survives this width, and below it nothing is left to cut
 /// that still says which state a screen is in.
 const MIN_CONTENT_WIDTH: u16 = 8;
@@ -73,7 +72,7 @@ impl Column {
         let width = area
             .width
             .saturating_sub(PADDING * 2)
-            .clamp(MIN_CONTENT_WIDTH, MAX_WIDTH)
+            .max(MIN_CONTENT_WIDTH)
             .min(area.width.saturating_sub(PADDING));
         Column {
             x: area.x + PADDING.min(area.width),
