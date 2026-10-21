@@ -18,7 +18,9 @@ jobs:
 
   release:
     needs: check
-    runs-on: ubuntu-24.04
+    # The darwin targets link against the macOS SDK, which only a macOS runner
+    # carries, so the job runs there and zig cross-links the linux targets.
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
@@ -29,13 +31,33 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # GoReleaser names the release after the tag, and the binary reports the
+      # version in Cargo.toml. Nothing else compares the two, so a tag pushed
+      # without a manifest bump would ship a binary that names the last release.
+      - if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          manifest="v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          test "$manifest" = "$TAG" || { echo "::error::The tag is $TAG, and Cargo.toml says $manifest."; exit 1; }
+
+      # Each tool is pinned to one version and checked before it runs: the
+      # action checks zig against upstream's minisign key, and install-action
+      # checks cargo-zigbuild against the hash in its manifest.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          go-version-file: go.mod
+          version: 0.17.0
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-zigbuild@0.23.4
+
+      # goreleaser-action checks the archive against checksums.txt, and checks
+      # the signature on checksums.txt only when cosign is on the PATH.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          version: "~> v2"
+          version: v2.18.3
           # A dispatch run renders the archives, checksums and cask that a tag
           # would publish. `build` would compile the binaries and render none of
           # them, which is where a template error actually hides.
@@ -45,3 +67,14 @@ jobs:
           # --skip=publish never reads the tap credential, so a dispatch run
           # never needs it and never receives it.
           HOMEBREW_TAP_TOKEN: ${{ github.event_name == 'push' && secrets.HOMEBREW_TAP_TOKEN || '' }}
+
+      # A dispatch run keeps what it rendered, so the archives and the cask can
+      # be read before a tag publishes the same thing.
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+            dist/homebrew/Casks/blank.rb

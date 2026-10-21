@@ -1,17 +1,16 @@
 version: 2
 
 builds:
-  - main: .
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - darwin
-      - linux
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+  - builder: rust
+    binary: blank
+    flags:
+      - --release
+      - --locked
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
 
 archives:
   - formats:
@@ -50,8 +49,12 @@ homebrew_casks:
 
 changelog:
   sort: asc
+  # The history is gitmoji, so the filters drop the doc, test, config and CI
+  # commits by their emoji rather than by a conventional-commit prefix.
   filters:
     exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+      - "^📝"
+      - "^🧪"
+      - "^✅"
+      - "^🔧"
+      - "^👷"
