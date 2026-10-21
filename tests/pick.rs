@@ -1,11 +1,14 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::process::Command;
 
 use common::terminal::{Respond, drive};
+use nix::errno::Errno;
+use nix::sys::signal::kill;
+use nix::unistd::Pid;
 
 fn blank_in(dir: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_blank"));
@@ -132,4 +135,57 @@ fn no_arguments_with_no_ui_prints_the_usage() {
     assert_eq!(shown.code, 0, "{}", shown.after);
     assert!(shown.after.contains("Usage:"), "{:?}", shown.after);
     assert!(!shown.after.contains("\x1b[?1049h"));
+}
+
+/// Closing the selector kills a tool still drawing a preview, and removes the directory it
+/// wrote in.
+///
+/// Given: a directory holding a PDF, a pdftoppm that never finishes on the search path, and a
+/// temporary directory of the test's own.
+/// When: blank opens there with the cursor on the PDF, and the operator quits once the tool has
+/// started.
+/// Then: the tool process is gone when blank has exited, and nothing is left in the temporary
+/// directory.
+///
+/// Why it matters: a tool left running outlives blank on an untrusted file, and a render left on
+/// the disk keeps a picture of a file the operator may go on to destroy.
+#[test]
+fn closing_the_selector_kills_its_tool_and_leaves_nothing_behind() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("report.pdf"), "%PDF-1.4\n%%EOF\n").unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let started = tools.path().join("started");
+    let script = format!(
+        "#!/bin/sh\necho $$ > '{started}.part'\n/bin/mv '{started}.part' '{started}'\nexec /bin/sleep 60\n",
+        started = started.display()
+    );
+    let tool = tools.path().join("pdftoppm");
+    fs::write(&tool, script).unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut command = blank_in(root.path());
+    let search = format!("{}:/usr/bin:/bin", tools.path().display());
+    command.env("PATH", search).env("TMPDIR", scratch.path());
+
+    // When:
+    let shown = drive(
+        &mut command,
+        [("report.pdf", Respond::KeysOnceExists(started.clone(), "q"))],
+    );
+
+    // Then:
+    assert_eq!(shown.code, 1, "{}", shown.after);
+    let pid: i32 = fs::read_to_string(&started)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        kill(Pid::from_raw(pid), None),
+        Err(Errno::ESRCH),
+        "the tool still runs"
+    );
+    let left: Vec<_> = fs::read_dir(scratch.path()).unwrap().collect();
+    assert!(left.is_empty(), "{left:?}");
 }

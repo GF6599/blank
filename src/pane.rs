@@ -16,6 +16,7 @@ use crate::chrome::{
 use crate::guard::Guard;
 use crate::plan::{counted, short_size};
 use crate::preview::{Picture, Preview, Totals, preview};
+use crate::render::Renderer;
 
 const PREVIEW_TITLE: &str = "preview";
 const FAILED_MARK: &str = "!";
@@ -38,6 +39,7 @@ pub(crate) struct PreviewPane {
     preview: Option<Preview>,
     id: u64,
     stop: Arc<AtomicBool>,
+    renderer: Arc<Renderer>,
     picker: Picker,
     /// The image of the preview, encoded for the terminal at the size it was last drawn.
     image: Option<StatefulProtocol>,
@@ -48,6 +50,7 @@ pub struct PreviewRequest {
     id: u64,
     path: PathBuf,
     guard: Arc<Guard>,
+    renderer: Arc<Renderer>,
     stop: Arc<AtomicBool>,
 }
 
@@ -61,16 +64,17 @@ impl PreviewRequest {
     pub fn run(&self) -> PreviewResult {
         PreviewResult {
             id: self.id,
-            preview: preview(&self.path, &self.guard, &self.stop),
+            preview: preview(&self.path, &self.guard, &self.renderer, &self.stop),
         }
     }
 }
 
 impl Drop for PreviewPane {
     /// The screen that follows needs the disk, and a walk for a pane nobody sees anymore would
-    /// compete with it.
+    /// compete with it. A tool still drawing is killed, and its renders are removed.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.renderer.close();
     }
 }
 
@@ -87,6 +91,7 @@ impl PreviewPane {
             preview: None,
             id: 0,
             stop: Arc::new(AtomicBool::new(false)),
+            renderer: Arc::new(Renderer::for_host()),
             picker,
             image: None,
         }
@@ -108,6 +113,7 @@ impl PreviewPane {
             id: self.id,
             path,
             guard: Arc::clone(&self.guard),
+            renderer: Arc::clone(&self.renderer),
             stop: Arc::clone(&self.stop),
         })
     }
@@ -120,9 +126,12 @@ impl PreviewPane {
         } = result
             && id == self.id
         {
-            if let Preview::Image(picture) = &found {
-                self.image = Some(self.picker.new_resize_protocol(picture.image.clone()));
-            }
+            self.image = match &found {
+                Preview::Image(Picture { image, .. }) | Preview::Rendered { image, .. } => {
+                    Some(self.picker.new_resize_protocol(image.clone()))
+                }
+                _ => None,
+            };
             self.preview = Some(found);
         }
     }
@@ -143,27 +152,32 @@ impl PreviewPane {
     }
 
     fn lines(&self, width: u16, pending: &str) -> Vec<(String, Color)> {
+        if self.previewed.is_none() {
+            return Vec::new();
+        }
+        match &self.preview {
+            Some(found) => self.found_lines(found, width),
+            None => vec![(pending.to_owned(), MUTED)],
+        }
+    }
+
+    fn found_lines(&self, found: &Preview, width: u16) -> Vec<(String, Color)> {
         let failure = |message: String| {
             wrap(&format!("{FAILED_MARK} {message}"), width)
                 .into_iter()
                 .map(|line| (line, LOVE))
                 .collect()
         };
-        if self.previewed.is_none() {
-            return Vec::new();
-        }
-        let Some(found) = &self.preview else {
-            return vec![(pending.to_owned(), MUTED)];
-        };
         match found {
             Preview::Text(lines) if lines.is_empty() => vec![("empty file".to_owned(), MUTED)],
             Preview::Text(lines) => lines.iter().map(|line| (line.clone(), TEXT)).collect(),
             Preview::Binary(head) => hex_dump(head, width),
             Preview::Image(picture) => vec![(caption(picture), MUTED)],
-            Preview::Undecoded { head, reason } => wrap(reason, width)
+            Preview::Rendered { kind, .. } => vec![(kind.caption().to_owned(), MUTED)],
+            Preview::Undecoded { reason, contents } => wrap(reason, width)
                 .into_iter()
                 .map(|line| (line, MUTED))
-                .chain(hex_dump(head, width))
+                .chain(self.found_lines(contents, width))
                 .collect(),
             Preview::Directory(totals) => {
                 std::iter::once((self.directory_heading.to_owned(), MUTED))

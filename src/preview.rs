@@ -10,6 +10,7 @@ use rustix::fs::{FileType, Mode, OFlags, fstat};
 
 use crate::guard::Guard;
 use crate::plan::{Plan, Statistics, short_size};
+use crate::render::{Kind, Renderer};
 use crate::terminal::{escape, escape_path};
 
 /// How much of a file a preview reads. A preview runs on every cursor move, so it never reads
@@ -24,8 +25,9 @@ pub const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
 /// The longest side of the image a preview keeps. A pane shows a few hundred pixels, and the
 /// image is encoded for the terminal on every draw at a new size.
 const PREVIEW_IMAGE_SIDE: u32 = 1024;
-/// How long an image waits before its decode. A cursor held down leaves an entry sooner, and
-/// its next move stops the decode before it starts, so only the image it rests on is decoded.
+/// How long an image waits before its decode or its render. A cursor held down leaves an entry
+/// sooner, and its next move stops the work before it starts, so only the image it rests on is
+/// decoded or drawn.
 const IMAGE_SETTLE: Duration = Duration::from_millis(120);
 /// The formats `image` is built with.
 const IMAGE_FORMATS: [ImageFormat; 6] = [
@@ -48,10 +50,15 @@ pub enum Preview {
     Text(Vec<String>),
     Binary(Vec<u8>),
     Image(Picture),
-    /// An image the preview would not decode, as its head, and why.
+    /// A kind of file that a tool outside blank drew as a picture.
+    Rendered {
+        kind: Kind,
+        image: DynamicImage,
+    },
+    /// A file the preview would not decode or draw, as its contents, and why.
     Undecoded {
-        head: Vec<u8>,
         reason: String,
+        contents: Box<Preview>,
     },
     /// What a run of the directory would destroy.
     Directory(Totals),
@@ -115,8 +122,14 @@ impl Totals {
     }
 }
 
-/// Previews `path`, or returns nothing once `stop` is set during a directory walk.
-pub fn preview(path: &Path, guard: &Guard, stop: &AtomicBool) -> Option<Preview> {
+/// Previews `path`, or returns nothing once `stop` is set during a directory walk, a decode or
+/// a render.
+pub fn preview(
+    path: &Path,
+    guard: &Guard,
+    renderer: &Renderer,
+    stop: &AtomicBool,
+) -> Option<Preview> {
     let kind = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata.file_type(),
         Err(error) => return Some(Preview::Unreadable(error.to_string())),
@@ -136,25 +149,54 @@ pub fn preview(path: &Path, guard: &Guard, stop: &AtomicBool) -> Option<Preview>
     if !kind.is_file() {
         return Some(Preview::Special(special_kind(&kind)));
     }
-    read_file(path, stop).unwrap_or_else(|error| Some(Preview::Unreadable(error.to_string())))
+    read_file(path, renderer, stop)
+        .unwrap_or_else(|error| Some(Preview::Unreadable(error.to_string())))
 }
 
-/// Reads a regular file, or returns nothing for an image the cursor left before the decode.
-fn read_file(path: &Path, stop: &AtomicBool) -> std::io::Result<Option<Preview>> {
+/// Reads a regular file, or returns nothing for an image the cursor left before the decode or
+/// the render ended.
+fn read_file(
+    path: &Path,
+    renderer: &Renderer,
+    stop: &AtomicBool,
+) -> std::io::Result<Option<Preview>> {
     let (file, size) = open_regular(path)?;
     let mut head = Vec::with_capacity(PREVIEW_BYTES);
     (&file).take(PREVIEW_BYTES as u64).read_to_end(&mut head)?;
-    let format = match image::guess_format(&head) {
-        Ok(format) if IMAGE_FORMATS.contains(&format) => format,
-        _ => return Ok(Some(contents(head))),
+    let drawing = match image::guess_format(&head) {
+        Ok(format) if IMAGE_FORMATS.contains(&format) => Drawing::Decode(format),
+        _ => match Kind::of(&head) {
+            Some(kind) => Drawing::Render(kind),
+            None => return Ok(Some(contents(head))),
+        },
     };
     if !settled(stop) {
         return Ok(None);
     }
-    Ok(Some(match decode(file, size, format) {
-        Ok(picture) => Preview::Image(picture),
-        Err(reason) => Preview::Undecoded { head, reason },
-    }))
+    let drawn = match drawing {
+        Drawing::Decode(format) => decode(file, size, format).map(Preview::Image),
+        Drawing::Render(kind) => match renderer.render(kind, file, stop) {
+            None => return Ok(None),
+            Some(Ok(output)) => {
+                let size = output.metadata()?.len();
+                decode(output, size, ImageFormat::Png).map(|picture| Preview::Rendered {
+                    kind,
+                    image: picture.image,
+                })
+            }
+            Some(Err(reason)) => Err(reason),
+        },
+    };
+    Ok(Some(drawn.unwrap_or_else(|reason| Preview::Undecoded {
+        reason,
+        contents: Box::new(contents(head)),
+    })))
+}
+
+/// How a file becomes a picture: decoded inside blank, or drawn by a tool outside it.
+enum Drawing {
+    Decode(ImageFormat),
+    Render(Kind),
 }
 
 /// Waits for the cursor to settle, and says whether it stayed on this entry.

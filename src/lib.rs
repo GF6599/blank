@@ -7,6 +7,7 @@ pub mod pane;
 pub mod plan;
 pub mod preview;
 pub mod question;
+pub mod render;
 pub mod review;
 pub mod screen;
 pub mod selector;

@@ -6,10 +6,17 @@ use std::sync::atomic::AtomicBool;
 use blank::guard::Guard;
 use blank::plan::{Plan, short_size};
 use blank::preview::{MAX_IMAGE_FILE_BYTES, PREVIEW_BYTES, Preview, Totals, preview};
+use blank::render::Renderer;
 use image::{GenericImageView, ImageFormat, Rgb, RgbImage};
 
 fn look(path: &Path) -> Preview {
-    preview(path, &Guard::for_host(), &AtomicBool::new(false)).expect("nothing stops the preview")
+    preview(
+        path,
+        &Guard::for_host(),
+        &Renderer::for_host(),
+        &AtomicBool::new(false),
+    )
+    .expect("nothing stops the preview")
 }
 
 /// A text file previews as its first lines, escaped.
@@ -353,8 +360,11 @@ fn an_image_the_preview_will_not_decode_falls_back_with_the_reason() {
         let shown = look(path);
 
         // Then:
-        let Preview::Undecoded { head, reason } = shown else {
+        let Preview::Undecoded { reason, contents } = shown else {
             panic!("{path:?} previews as its head, not {shown:?}");
+        };
+        let Preview::Binary(head) = *contents else {
+            panic!("{path:?} previews as its head bytes, not {contents:?}");
         };
         assert!(head.starts_with(PNG_SIGNATURE), "{path:?}");
         assert!(reason.contains(&expected), "{path:?}: {reason}");
@@ -378,7 +388,12 @@ fn an_image_the_cursor_has_left_is_never_decoded() {
     png(&path, 40, 20);
 
     // When:
-    let shown = preview(&path, &Guard::for_host(), &AtomicBool::new(true));
+    let shown = preview(
+        &path,
+        &Guard::for_host(),
+        &Renderer::for_host(),
+        &AtomicBool::new(true),
+    );
 
     // Then:
     assert!(shown.is_none(), "{shown:?}");

@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -28,6 +29,9 @@ pub enum Respond {
     Keys(&'static str),
     /// An interrupt from outside the terminal, which raw mode does not turn into a key.
     Interrupt,
+    /// Keys typed once the file exists, for a step that waits on a process the screen does not
+    /// show.
+    KeysOnceExists(PathBuf, &'static str),
 }
 
 pub fn show(args: &[&str], waits_for: &str, respond: Respond) -> Shown {
@@ -101,6 +105,14 @@ pub fn drive<'a>(
         match respond {
             Respond::Keys(keys) => writer.write_all(keys.as_bytes()).unwrap(),
             Respond::Interrupt => kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).unwrap(),
+            Respond::KeysOnceExists(file, keys) => {
+                let deadline = Instant::now() + Duration::from_secs(20);
+                while !file.exists() {
+                    assert!(Instant::now() < deadline, "{file:?} never appeared");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                writer.write_all(keys.as_bytes()).unwrap();
+            }
         }
     }
     let deadline = Instant::now() + Duration::from_secs(20);
