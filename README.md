@@ -100,8 +100,15 @@ the same review as a command line.
 
 The preview pane shows the entry under the cursor. A text file shows its first lines, a
 binary file shows a hex dump of its first bytes, a directory shows what marking it would
-destroy, and a symlink shows where it points. The line under the status row totals the
-whole marked set.
+destroy, and a symlink shows where it points. An image (PNG, JPEG, GIF, WebP, BMP or TIFF,
+told by its first bytes and not by its name) shows as the picture under a caption with its
+format and its size in pixels. The picture goes through the terminal's graphics protocol,
+kitty, iTerm2 or sixel, and through coloured half-blocks on a terminal with none.
+
+The line under the status row totals the whole marked set. From 124 columns a third pane,
+`marked`, takes its place and shows the statistics the review shows: each kind, the bytes
+the files hold and the bytes the covers will write, the five largest files, and the files
+the run will leave.
 
 | Cell | Meaning |
 | --- | --- |
@@ -316,6 +323,17 @@ These are properties of the current implementation. Each one is reproducible.
   reordering character cannot make one name pass for another. An emoji with a variation
   selector therefore shows the selector as `\u{fe0f}`. A letter from another script that
   looks like a Latin one, such as the Cyrillic `а`, displays as itself.
+- **An image preview decodes an untrusted file inside blank.** The decoders are written in
+  Rust and link no C library, and two caps bound what one preview costs: a file over
+  32 MiB, or an image whose header claims pixels that would take more than 128 MiB, shows
+  its first bytes and the reason instead. The size check reads the header before any pixel
+  is decoded, so a small file that claims a huge image costs nothing.
+- **The screen asks the terminal how it draws images.** It asks once a session, when the
+  selector or the review first opens, and waits at most half a second for the answer. A
+  terminal that never answers the device status request then loses the first keystroke
+  typed after the screen opens, because the query keeps reading for it. Inside tmux the
+  query also turns on `allow-passthrough` for the pane, so the images reach the outer
+  terminal.
 - **A directory the walk cannot list gets no row and no weight.** It is not in the plan, so
   the activity panel never shows it, and the bar can reach 100% while the status line says
   `blanking failed, 1 target survived`. The error after the screen closes names it as
