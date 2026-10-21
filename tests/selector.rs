@@ -129,7 +129,7 @@ fn tree(names: &[&str]) -> tempfile::TempDir {
 fn a_protected_path_cannot_be_marked() {
     // Given:
     let mut selector = open(Path::new("/"));
-    select(&mut selector, "usr");
+    select(&mut selector, "usr/");
 
     // When:
     press(&mut selector, KeyCode::Char(' '));
