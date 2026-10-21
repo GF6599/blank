@@ -54,6 +54,11 @@ struct Cli {
     #[arg(long)]
     log: Option<PathBuf>,
 
+    /// Destroy a file that has a hard link outside the selection, which destroys the contents
+    /// under that name too
+    #[arg(long)]
+    allow_hard_links: bool,
+
     /// Turn off the full screen and print one line per target to stdout. A run whose input or
     /// output is not a terminal is headless anyway
     #[arg(long)]
@@ -104,9 +109,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
         picked
     };
+    let options = Options {
+        jobs: cli.jobs,
+        passes: cli.passes,
+        allow_hard_links: cli.allow_hard_links,
+    };
     let plan = Plan::enumerate(&paths, &guard)?;
     if cli.dry_run {
-        plan.write_dry_run(&mut io::stdout().lock(), cli.passes)?;
+        plan.write_dry_run(&mut io::stdout().lock(), &options)?;
         // A plan built over a directory nobody could read is missing whatever is inside it, so
         // reporting it as clean would understate what the run would destroy.
         return match plan.incomplete() {
@@ -131,10 +141,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 &mut io::stdin().lock(),
                 &mut io::stdout().lock(),
                 &plan,
-                cli.passes,
+                &options,
             )?
         } else {
-            screen::review(&plan, Arc::clone(&guard), cli.passes)?
+            screen::review(&plan, Arc::clone(&guard), &options)?
         };
         if !confirmed {
             // An error rather than a clean exit, because exit zero is what this command says
@@ -158,10 +168,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     );
     // SAFETY: the handler only stores to an atomic, which is safe inside a signal handler.
     unsafe { sigaction(Signal::SIGINT, &interrupt) }?;
-    let options = Options {
-        jobs: cli.jobs,
-        passes: cli.passes,
-    };
     let mut record = |update: &Update<'_>| {
         if let (Some(manifest), Update::Target { path, stage, .. }) = (&mut manifest, update)
             && *stage == Stage::Done

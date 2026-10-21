@@ -3,6 +3,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use blank::engine::{DEFAULT_JOBS, Options};
 use blank::guard::Guard;
 use blank::plan::Plan;
 use blank::review::{Answer, Review};
@@ -17,7 +18,12 @@ fn plan_of(paths: &[&Path]) -> Plan {
 }
 
 fn review(plan: &Plan) -> Review<'_> {
-    let mut review = Review::new(plan, Arc::new(Guard::for_host()), 2);
+    let options = Options {
+        jobs: DEFAULT_JOBS,
+        passes: 2,
+        allow_hard_links: false,
+    };
+    let mut review = Review::new(plan, Arc::new(Guard::for_host()), &options);
     settle(&mut review);
     review
 }
@@ -494,4 +500,53 @@ fn a_taller_screen_shows_again_the_rows_a_short_one_scrolled_away() {
 
     // Then:
     assert!(text.contains("/project/"), "{text}");
+}
+
+/// A file with a hard link outside the selection is marked on the review.
+///
+/// Given: a tree holding a file that has a second hard link outside it.
+/// When: the review is drawn without permission for hard links, and then with it.
+/// Then: without it the row carries a `!` and says it is linked outside, and with it the row
+/// keeps the note and loses the `!`.
+///
+/// Why it matters: the operator cannot see the other names of a file, and the review is where
+/// they decide, so it must say which files the run leaves and which it destroys under every name.
+#[test]
+fn a_file_linked_outside_the_selection_is_marked() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("shared.txt"), "contents").unwrap();
+    fs::hard_link(
+        root.path().join("shared.txt"),
+        outside.path().join("kept.txt"),
+    )
+    .unwrap();
+    let plan = plan_of(&[root.path()]);
+    let row = |allow_hard_links: bool| {
+        let options = Options {
+            jobs: DEFAULT_JOBS,
+            passes: 2,
+            allow_hard_links,
+        };
+        let mut screen = Review::new(&plan, Arc::new(Guard::for_host()), &options);
+        lines(&render(&mut screen, 100, 30))
+            .into_iter()
+            .find(|line| line.contains("shared.txt"))
+            .expect("the file has a row")
+    };
+
+    // When:
+    let refused = row(false);
+    let allowed = row(true);
+
+    // Then:
+    assert!(
+        refused.contains('!') && refused.contains("linked outside"),
+        "{refused}"
+    );
+    assert!(
+        !allowed.contains('!') && allowed.contains("linked outside"),
+        "{allowed}"
+    );
 }

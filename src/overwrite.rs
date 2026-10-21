@@ -19,6 +19,9 @@ use crate::plan::Identity;
 /// lets the write through, and the entry is unlinked moments later.
 const FORCED_MODE: ChmodMode = ChmodMode::S_IRUSR.union(ChmodMode::S_IWUSR);
 
+const LINKED_OUTSIDE: &str = "has hard links outside the selection, and covering it would \
+     destroy the contents under those names too. Pass --allow-hard-links to destroy it anyway";
+
 /// How many random names the rename tries before it gives up on a crowded directory.
 const OBSCURE_ATTEMPTS: usize = 128;
 
@@ -26,6 +29,7 @@ type Fill = fn(&mut [u8]);
 
 pub(crate) struct Covers<'w> {
     pub(crate) passes: u32,
+    pub(crate) allow_hard_links: bool,
     /// Grown to the largest write the worker has needed, and never past `COVER_CHUNK`.
     pub(crate) buf: &'w mut Vec<u8>,
     /// Checked before every write, so a stop ends a large file within one chunk.
@@ -54,10 +58,12 @@ pub(crate) fn overwrite(
     parent: BorrowedFd<'_>,
     name: &OsStr,
     planned: Identity,
+    names: u64,
     covers: &mut Covers<'_>,
 ) -> Result<(), TargetError> {
+    let outside = (!covers.allow_hard_links).then_some(names);
     let (mut file, size) =
-        open_for_overwrite(parent, name, planned).map_err(TargetError::intact)?;
+        open_for_overwrite(parent, name, planned, outside).map_err(TargetError::intact)?;
     let needed = COVER_CHUNK.min(usize::try_from(size).unwrap_or(COVER_CHUNK));
     if covers.buf.len() < needed {
         covers.buf.resize(needed, 0);
@@ -92,10 +98,16 @@ pub(crate) fn overwrite(
 /// Opens `name` for writing without following a symlink, and only if it is still the regular
 /// file the plan found. `O_NONBLOCK` makes a FIFO that took the name since the plan fail the
 /// open, where a plain open would wait for a reader that never comes.
+///
+/// With `names` set, the open also refuses a file with more names than that, because the
+/// covers write to the file and not to a name, so they would destroy the contents under a name
+/// outside the selection too. The link count is read here and not only when the plan is made,
+/// because a link can be added while the operator answers the question.
 fn open_for_overwrite(
     parent: BorrowedFd<'_>,
     name: &OsStr,
     planned: Identity,
+    names: Option<u64>,
 ) -> Result<(File, u64), String> {
     let flags = OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let opened = match openat(parent, name, flags, Mode::empty()) {
@@ -114,6 +126,11 @@ fn open_for_overwrite(
     }
     if identity_of(&stat) != planned {
         return Err(CHANGED.to_owned());
+    }
+    if let Some(names) = names
+        && u64::from(stat.st_nlink) > names
+    {
+        return Err(LINKED_OUTSIDE.to_owned());
     }
     fcntl_setfl(&fd, OFlags::empty()).map_err(|error| format!("clear O_NONBLOCK: {error}"))?;
     let size = u64::try_from(stat.st_size).unwrap_or(0);
@@ -342,7 +359,7 @@ mod tests {
         let dir = open_dir(root.path());
 
         // When:
-        let opened = open_for_overwrite(dir.as_fd(), OsStr::new("planned.txt"), planned);
+        let opened = open_for_overwrite(dir.as_fd(), OsStr::new("planned.txt"), planned, None);
 
         // Then:
         assert!(opened.is_err());

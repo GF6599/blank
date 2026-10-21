@@ -254,9 +254,9 @@ enum Read {
 
 /// Shows the review of `plan` and returns whether the operator typed yes and pressed enter.
 /// Every other way out of the screen destroys nothing.
-pub fn review(plan: &Plan, guard: Arc<Guard>, passes: u32) -> io::Result<bool> {
+pub fn review(plan: &Plan, guard: Arc<Guard>, options: &Options) -> io::Result<bool> {
     let mut screen = FullScreen::enter()?;
-    let mut review = Review::new(plan, guard, passes);
+    let mut review = Review::new(plan, guard, options);
     let (sender, receiver) = mpsc::channel();
     loop {
         for result in receiver.try_iter() {

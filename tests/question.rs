@@ -4,7 +4,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use blank::engine::DEFAULT_PASSES;
+use blank::engine::{DEFAULT_JOBS, DEFAULT_PASSES, Options};
 use blank::guard::Guard;
 use blank::plan::Plan;
 use blank::question::confirm;
@@ -17,8 +17,13 @@ fn plan_of(args: &[&Path]) -> Plan {
 
 fn ask(plan: &Plan, answer: &str) -> (bool, String) {
     let mut shown = Vec::new();
-    let go_on = confirm(&mut answer.as_bytes(), &mut shown, plan, DEFAULT_PASSES)
-        .expect("the question is asked");
+    let options = Options {
+        jobs: DEFAULT_JOBS,
+        passes: DEFAULT_PASSES,
+        allow_hard_links: false,
+    };
+    let go_on =
+        confirm(&mut answer.as_bytes(), &mut shown, plan, &options).expect("the question is asked");
     (go_on, String::from_utf8(shown).unwrap())
 }
 

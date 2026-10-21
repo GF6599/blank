@@ -112,6 +112,7 @@ fn one_survivor() -> Result<(), Incomplete> {
     let options = Options {
         jobs: DEFAULT_JOBS,
         passes: 1,
+        allow_hard_links: false,
     };
     destroy(&plan, options, &AtomicBool::new(false), &mut |_| {})
 }
@@ -181,6 +182,7 @@ fn the_status_line_fits_every_width_and_keeps_the_outcome() {
     let options = Options {
         jobs: DEFAULT_JOBS,
         passes: 1,
+        allow_hard_links: false,
     };
     let report = destroy(&plan, options, &AtomicBool::new(false), &mut |_| {});
     let mut view = RunView::new();

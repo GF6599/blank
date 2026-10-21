@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, Write};
 
+use crate::engine::Options;
 use crate::plan::Plan;
 use crate::terminal::escape_path;
 
@@ -15,10 +16,10 @@ pub fn confirm(
     input: &mut impl BufRead,
     output: &mut impl Write,
     plan: &Plan,
-    passes: u32,
+    options: &Options,
 ) -> io::Result<bool> {
     writeln!(output, "blank will destroy {}.", plan.summary())?;
-    plan.statistics().write_totals(output, passes)?;
+    plan.statistics().write_totals(output, options)?;
     writeln!(output, "Selected roots:")?;
     for root in plan.roots().iter().take(ROOTS_NAMED) {
         writeln!(output, "  {}", escape_path(root))?;

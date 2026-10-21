@@ -36,6 +36,9 @@ pub struct Options {
     pub jobs: NonZeroUsize,
     /// Random covers over each file before the zero cover.
     pub passes: u32,
+    /// Cover a file that has a hard link outside the selection, which destroys the contents
+    /// under that name too. Without it such a file is left intact and reported.
+    pub allow_hard_links: bool,
 }
 
 /// How far the run has got with one target.
@@ -151,7 +154,7 @@ fn overwrite_files(
         for _ in 0..options.jobs.get().min(files.len()) {
             let sender = sender.clone();
             let worker = thread::Builder::new().spawn_scoped(scope, || {
-                work(plan, files, &next, options.passes, stop, sender);
+                work(plan, files, &next, options, stop, sender);
             });
             // The workers already running finish the files, so a host that refuses one more
             // thread costs speed and not the run.
@@ -182,7 +185,7 @@ fn work(
     plan: &Plan,
     files: &[Target],
     next: &AtomicUsize,
-    passes: u32,
+    options: Options,
     stop: &AtomicBool,
     sender: Sender<Message>,
 ) {
@@ -200,14 +203,15 @@ fn work(
         }
         let result = reach(plan, &mut dirs, target).and_then(|(parent, name, planned)| {
             let mut covers = Covers {
-                passes,
+                passes: options.passes,
+                allow_hard_links: options.allow_hard_links,
                 buf: &mut buf,
                 stop,
                 landed: &mut |bytes| {
                     let _ = sender.send(Message::Covered(index, bytes));
                 },
             };
-            overwrite(parent, name, planned, &mut covers)
+            overwrite(parent, name, planned, plan.names_of(planned), &mut covers)
         });
         let _ = sender.send(Message::Settled(index, result));
     }

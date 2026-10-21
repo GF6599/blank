@@ -28,7 +28,19 @@ fn options(jobs: usize, passes: u32) -> Options {
     Options {
         jobs: NonZeroUsize::new(jobs).expect("a test asks for at least one worker"),
         passes,
+        allow_hard_links: false,
     }
+}
+
+/// Runs a plan with permission for hard links, for a test that reads the covered bytes through
+/// a `witness` link. That link lies outside the selection, so without permission the run would
+/// leave the file intact.
+fn run_witnessed(plan: &Plan, passes: u32) -> Run {
+    let options = Options {
+        allow_hard_links: true,
+        ..options(DEFAULT_JOBS.get(), passes)
+    };
+    run_reacting(plan, options, &AtomicBool::new(false), |_| {})
 }
 
 /// Runs the plan, and calls `react` on each update after it is recorded, so a test can stop the
@@ -155,7 +167,7 @@ fn a_destroyed_file_leaves_zeros_and_no_name() {
     let (_keep, seen) = witness(&path);
 
     // When:
-    let run = run_plan(&plan_of(&[&path]), 2);
+    let run = run_witnessed(&plan_of(&[&path]), 2);
 
     // Then:
     assert_eq!(run.report, Ok(()));
@@ -186,7 +198,7 @@ fn a_file_larger_than_one_write_is_covered_to_the_last_byte() {
     let (_keep, seen) = witness(&path);
 
     // When:
-    let run = run(&[&path]);
+    let run = run_witnessed(&plan_of(&[&path]), 1);
 
     // Then:
     assert_eq!(run.report, Ok(()));
@@ -277,7 +289,7 @@ fn a_special_file_is_removed_without_an_overwrite() {
     nix::unistd::mkfifo(&pipe, nix::sys::stat::Mode::S_IRWXU).unwrap();
 
     // When:
-    let run = run(&[root.path()]);
+    let run = run_witnessed(&plan_of(&[root.path()]), 1);
 
     // Then:
     assert_eq!(run.report, Ok(()));

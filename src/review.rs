@@ -13,6 +13,7 @@ use crate::chrome::{
     CONTROLS_GAP, Column, LOVE, Line, MUTED, SUBTLE, TEXT, cells, draw_controls, draw_mark,
     draw_panel, panel_rows, put, split_panes, wrap,
 };
+use crate::engine::Options;
 use crate::guard::Guard;
 use crate::pane::{PreviewPane, PreviewRequest, PreviewResult};
 use crate::plan::{Plan, short_size};
@@ -63,6 +64,8 @@ struct Row<'p> {
     kind: RowKind,
     /// The size of a file, or of every file under a directory.
     bytes: Option<u64>,
+    /// A file with a hard link outside the selection.
+    linked: bool,
 }
 
 /// The screen before a run with the interface: what the run will destroy, every target as a
@@ -76,13 +79,15 @@ pub struct Review<'p> {
     panel_rows: usize,
     answer: String,
     pane: PreviewPane,
+    allow_hard_links: bool,
 }
 
 impl<'p> Review<'p> {
-    pub fn new(plan: &'p Plan, guard: Arc<Guard>, passes: u32) -> Review<'p> {
+    pub fn new(plan: &'p Plan, guard: Arc<Guard>, options: &Options) -> Review<'p> {
         Review {
-            header: header(plan, passes),
+            header: header(plan, options),
             rows: tree(plan),
+            allow_hard_links: options.allow_hard_links,
             cursor: 0,
             first: 0,
             panel_rows: 1,
@@ -228,16 +233,29 @@ impl<'p> Review<'p> {
             .iter()
             .skip(self.first)
             .take(self.panel_rows)
-            .map(|row| ShownRow {
-                label: label(row),
-                detail: match row.kind {
-                    RowKind::Unreadable => Some(("cannot be read".to_owned(), LOVE)),
-                    _ => row.bytes.map(|bytes| (short_size(bytes), MUTED)),
-                },
-                state: match row.kind {
-                    RowKind::Unreadable => (FAILED_MARK, LOVE),
-                    _ => (" ", TEXT),
-                },
+            .map(|row| {
+                // Without permission the run leaves a file linked outside intact, so it reads
+                // as a survivor. With it, the note stays, because the run destroys the other
+                // names too.
+                let linked = row.linked.then_some(if self.allow_hard_links {
+                    ("linked outside".to_owned(), MUTED)
+                } else {
+                    ("linked outside".to_owned(), LOVE)
+                });
+                let survives =
+                    row.kind == RowKind::Unreadable || (row.linked && !self.allow_hard_links);
+                ShownRow {
+                    label: label(row),
+                    detail: match row.kind {
+                        RowKind::Unreadable => Some(("cannot be read".to_owned(), LOVE)),
+                        _ => linked.or_else(|| row.bytes.map(|bytes| (short_size(bytes), MUTED))),
+                    },
+                    state: if survives {
+                        (FAILED_MARK, LOVE)
+                    } else {
+                        (" ", TEXT)
+                    },
+                }
             })
             .collect();
         let lines = shown.iter().enumerate().map(|(offset, row)| Line {
@@ -272,10 +290,10 @@ fn label(row: &Row<'_>) -> String {
 }
 
 /// What the run will destroy, what the covers will write, and what will survive.
-fn header(plan: &Plan, passes: u32) -> Vec<(String, Color)> {
+fn header(plan: &Plan, options: &Options) -> Vec<(String, Color)> {
     let mut totals = Vec::new();
     plan.statistics()
-        .write_totals(&mut totals, passes)
+        .write_totals(&mut totals, options)
         .expect("writing to memory cannot fail");
     let totals = String::from_utf8(totals).expect("the totals are UTF-8");
     let mut lines = vec![(format!("blank will destroy {}.", plan.summary()), TEXT)];
@@ -291,6 +309,11 @@ fn header(plan: &Plan, passes: u32) -> Vec<(String, Color)> {
 /// with its depth below its root, and the size of every file and of every directory's files.
 fn tree(plan: &Plan) -> Vec<Row<'_>> {
     let statistics = plan.statistics();
+    let linked: HashSet<&Path> = statistics
+        .linked
+        .iter()
+        .map(|path| path.as_path())
+        .collect();
     let directories: HashSet<&Path> = plan.directories.iter().map(|path| path.as_path()).collect();
     let mut directory_bytes: HashMap<&Path, u64> = HashMap::new();
     for file in &plan.files {
@@ -338,6 +361,7 @@ fn tree(plan: &Plan) -> Vec<Row<'_>> {
                 depth: depth(plan, path),
                 kind,
                 bytes,
+                linked: linked.contains(path.as_path()),
             }
         })
         .collect();

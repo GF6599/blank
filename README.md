@@ -318,8 +318,13 @@ These are properties of the current implementation. Each one is reproducible.
 - **A target that fails before the walk queues it gets no row.** A directory the walk
   cannot list is counted in the status line and named in the error, but no row in the
   panel carries a `!` for it, because the run never reached it.
-- **A hardlink is overwritten like any other file.** A hardlink is the file rather than a
-  pointer to it, so destroying one destroys the contents every other link shares.
+- **A file with a hard link outside the selection is left intact.** A hard link is the
+  file rather than a pointer to it, so covering one name destroys the contents under every
+  other name too, including names you did not select. The run reads the link count of each
+  file as it opens it, and a file with more names than the selection holds is reported as
+  intact. The dry run, the question and the review name such files. Pass
+  `--allow-hard-links` to destroy the contents under every name. A file whose names are all
+  selected is destroyed without it.
 - **Writing over a file does not always reach the bytes it held.** An SSD remaps blocks as
   it writes, and a copy-on-write filesystem such as APFS, Btrfs or ZFS may place the new
   data somewhere else and leave the old blocks intact. A snapshot, a journal, or a backup

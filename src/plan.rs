@@ -7,6 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::engine::Options;
 use crate::guard::{Guard, Refusal};
 use crate::terminal::{escape, escape_path};
 
@@ -45,6 +46,11 @@ pub struct Plan {
     bytes: u64,
     largest: Vec<(PathBuf, u64)>,
     unreadable: Vec<PathBuf>,
+    /// How many names of each file the plan holds. A file with more names than this has a
+    /// hard link outside the selection.
+    names: HashMap<Identity, u64>,
+    /// The files with a hard link outside the selection.
+    linked: Vec<PathBuf>,
 }
 
 /// One target as the walk found it.
@@ -55,6 +61,8 @@ struct Found {
     /// receive the inode just freed, and passes.
     identity: Identity,
     size: u64,
+    /// How many names the file has, its own included.
+    links: u64,
 }
 
 /// What a run of a plan would destroy, and what it would leave because the walk could not read
@@ -70,6 +78,9 @@ pub struct Statistics<'p> {
     /// The directories the walk could not list. Each survives the run with every directory
     /// above it.
     pub unreadable: &'p [PathBuf],
+    /// The files with a hard link outside the selection. The covers write to the file and not
+    /// to a name, so covering one destroys the contents under the outside name too.
+    pub linked: &'p [PathBuf],
 }
 
 impl Statistics<'_> {
@@ -80,8 +91,9 @@ impl Statistics<'_> {
         self.bytes.saturating_mul(u64::from(passes) + 1)
     }
 
-    /// The totals the dry run and the question both print, so the two read alike.
-    pub fn write_totals(&self, out: &mut impl Write, passes: u32) -> io::Result<()> {
+    /// The totals the dry run, the question and the review all print, so they read alike.
+    pub fn write_totals(&self, out: &mut impl Write, options: &Options) -> io::Result<()> {
+        let passes = options.passes;
         let covers = passes.saturating_add(1);
         let noun = if covers == 1 { "pass" } else { "passes" };
         writeln!(
@@ -91,15 +103,33 @@ impl Statistics<'_> {
             size(self.cover_bytes(passes)),
         )?;
         match self.unreadable.len() {
-            0 => Ok(()),
+            0 => {}
             1 => writeln!(
                 out,
                 "1 directory cannot be read, and it will survive the run."
-            ),
+            )?,
             count => writeln!(
                 out,
                 "{count} directories cannot be read, and they will survive the run."
-            ),
+            )?,
+        }
+        let (files, verb, pronoun) = match self.linked.len() {
+            0 => return Ok(()),
+            1 => ("1 file".to_owned(), "has", "it"),
+            count => (format!("{count} files"), "have", "them"),
+        };
+        if options.allow_hard_links {
+            writeln!(
+                out,
+                "{files} {verb} hard links outside the selection, and covering {pronoun} \
+                 destroys the contents under every name."
+            )
+        } else {
+            writeln!(
+                out,
+                "{files} {verb} hard links outside the selection, and the run leaves {pronoun} \
+                 intact unless --allow-hard-links is given."
+            )
         }
     }
 }
@@ -144,7 +174,7 @@ impl Target {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Identity {
     device: u64,
     inode: u64,
@@ -288,6 +318,16 @@ impl Plan {
                 return Ok(None);
             }
         }
+        plan.linked = plan
+            .files
+            .iter()
+            .filter(|path| {
+                plan.found
+                    .get(*path)
+                    .is_some_and(|found| found.links > plan.names_of(found.identity))
+            })
+            .cloned()
+            .collect();
         Ok(Some(plan))
     }
 
@@ -320,6 +360,9 @@ impl Plan {
             match kind {
                 Kind::File => {
                     self.count_file(&path);
+                    if let Some(found) = self.found.get(&path) {
+                        *self.names.entry(found.identity).or_default() += 1;
+                    }
                     self.files.push(path);
                 }
                 Kind::Removal => self.removals.push(path),
@@ -361,6 +404,7 @@ impl Plan {
             bytes: self.bytes,
             largest: &self.largest,
             unreadable: &self.unreadable,
+            linked: &self.linked,
         }
     }
 
@@ -399,6 +443,11 @@ impl Plan {
 
     pub(crate) fn identity(&self, path: &Path) -> Option<Identity> {
         self.found.get(path).map(|found| found.identity)
+    }
+
+    /// How many names of the file with `identity` the plan holds.
+    pub(crate) fn names_of(&self, identity: Identity) -> u64 {
+        self.names.get(&identity).copied().unwrap_or(0)
     }
 
     /// The length of a file as the walk found it, and zero for every other target.
@@ -472,12 +521,12 @@ impl Plan {
 
     /// Writes every target, one per line, in run order. Long output is the point: a count alone
     /// cannot show that a command is aimed at the wrong directory.
-    pub fn write_dry_run(&self, out: &mut impl Write, passes: u32) -> io::Result<()> {
+    pub fn write_dry_run(&self, out: &mut impl Write, options: &Options) -> io::Result<()> {
         for target in self.targets() {
             writeln!(out, "{} {}", target.verb(), escape_path(&target.path))?;
         }
         writeln!(out, "Dry run. {}. Nothing was destroyed.", self.summary())?;
-        self.statistics().write_totals(out, passes)
+        self.statistics().write_totals(out, options)
     }
 }
 
@@ -495,6 +544,7 @@ fn classify(path: &Path) -> io::Result<(Kind, Found)> {
     let found = Found {
         identity: Identity::new(metadata.dev(), metadata.ino()),
         size: metadata.len(),
+        links: metadata.nlink(),
     };
     let kind = metadata.file_type();
     let kind = if kind.is_symlink() {

@@ -27,8 +27,12 @@ described in the README.
 - The guard resolves symlinks and does not resolve mount points. A bind mount
   of a system path inside the home directory is a second name the guard cannot
   see. The guard catches a mistyped argument, which is what it is for.
-- A hardlink is the file rather than a pointer to it, so destroying one
-  destroys the contents every other link shares.
+- A file with a hard link outside the selection is left intact unless
+  `--allow-hard-links` is given, because covering it would destroy the contents
+  under names nobody selected. Anyone who can write in a selected tree can add
+  such a link to a file the operator owns. The run reads the link count when it
+  opens each file, so a link added after the plan is caught too. With the flag,
+  the contents under every name are destroyed.
 
 ## Supported versions
 
