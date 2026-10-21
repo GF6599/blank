@@ -48,6 +48,7 @@ lint:
 	go tool staticcheck ./...
 	go tool govulncheck ./...
 	cargo clippy --all-targets --locked -- -D warnings
+	cargo clippy --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings
 	cargo deny check
 
 # Run the tests
