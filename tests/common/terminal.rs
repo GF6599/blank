@@ -12,6 +12,10 @@ use nix::unistd::Pid;
 
 /// The sequence that leaves the alternate screen. Everything after it stays in the scrollback.
 const LEAVE_ALTERNATE_SCREEN: &str = "\x1b[?1049l";
+/// The device status request that ends the graphics query, and the answer every terminal gives.
+/// A terminal that never answers leaves the query reading the first keys typed after it.
+const STATUS_REQUEST: &[u8] = b"\x1b[5n";
+const STATUS_ANSWER: &[u8] = b"\x1b[0n";
 
 pub struct Shown {
     /// What the terminal received after the full screen closed, or all of it when no full
@@ -69,6 +73,7 @@ pub fn drive<'a>(
     });
     let mut seen = Vec::new();
     let mut searched = 0;
+    let mut answered = 0;
     for (waits_for, respond) in steps {
         // Every frame hides the cursor again, so the screen never falls silent, and only a
         // deadline for the whole wait ends it.
@@ -84,6 +89,14 @@ pub fn drive<'a>(
                 panic!("{waits_for:?} never appeared:\n{text:?}");
             };
             seen.extend(chunk);
+            let requests = seen
+                .windows(STATUS_REQUEST.len())
+                .filter(|window| *window == STATUS_REQUEST)
+                .count();
+            for _ in answered..requests {
+                writer.write_all(STATUS_ANSWER).unwrap();
+            }
+            answered = requests;
         }
         match respond {
             Respond::Keys(keys) => writer.write_all(keys.as_bytes()).unwrap(),

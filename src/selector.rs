@@ -11,6 +11,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use ratatui::style::Color;
+use ratatui_image::picker::Picker;
 
 use crate::chrome::{
     CONTROLS_GAP, Column, ELLIPSIS, LOVE, Line, MUTED, SUBTLE, TEXT, cells, clamp_tail,
@@ -212,7 +213,12 @@ impl Drop for Selector {
 
 impl Selector {
     /// A selector on `dir`, and the read of its first listing.
-    pub fn open(dir: &Path, guard: Arc<Guard>, options: Options) -> (Selector, LoadRequest) {
+    pub fn open(
+        dir: &Path,
+        guard: Arc<Guard>,
+        options: Options,
+        picker: Picker,
+    ) -> (Selector, LoadRequest) {
         // A relative name of one part has an empty parent, so a selector that kept it could
         // never leave the directory it started in.
         let dir = fs::canonicalize(dir)
@@ -227,7 +233,7 @@ impl Selector {
             dir,
             entries: Vec::new(),
             marked: BTreeSet::new(),
-            pane: PreviewPane::new(Arc::clone(&guard), "marking it destroys"),
+            pane: PreviewPane::new(Arc::clone(&guard), "marking it destroys", picker),
             guard,
             filter: String::new(),
             filtering: false,
@@ -644,7 +650,7 @@ impl Selector {
         }
     }
 
-    fn draw_preview(&self, buffer: &mut Buffer, area: Rect) {
+    fn draw_preview(&mut self, buffer: &mut Buffer, area: Rect) {
         let pending = match self.selected() {
             Some(entry) if entry.is_dir => "counting",
             _ => "reading",

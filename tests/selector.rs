@@ -11,6 +11,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
+use ratatui_image::picker::Picker;
 
 const GOLD: Color = Color::Rgb(0xf6, 0xc1, 0x77);
 const IRIS: Color = Color::Rgb(0xc4, 0xa7, 0xe7);
@@ -25,7 +26,12 @@ const OPTIONS: Options = Options {
 
 /// Opens a selector on `dir` and finishes its first load, as the screen would.
 fn open(dir: &Path) -> Selector {
-    let (mut selector, load) = Selector::open(dir, Arc::new(Guard::for_host()), OPTIONS);
+    let (mut selector, load) = Selector::open(
+        dir,
+        Arc::new(Guard::for_host()),
+        OPTIONS,
+        Picker::halfblocks(),
+    );
     selector.loaded(load.run());
     settle(&mut selector);
     selector
@@ -1228,4 +1234,48 @@ fn the_statistics_pane_says_when_nothing_is_marked() {
     let pane = panel(&screen, "marked").expect("a pane titled marked");
     let filled: Vec<&String> = pane.iter().filter(|row| !row.is_empty()).collect();
     assert_eq!(filled, ["nothing marked"]);
+}
+
+/// The cells of `buffer` drawn in `color`, in either the foreground or the background.
+fn painted(buffer: &Buffer, color: Color) -> usize {
+    buffer
+        .content()
+        .iter()
+        .filter(|cell| cell.fg == color || cell.bg == color)
+        .count()
+}
+
+/// An image previews as its caption and the image, and leaves nothing behind when the cursor
+/// moves on.
+///
+/// Given: a selector on a directory holding a red PNG of 40 by 20 and a text file after it.
+/// When: it is drawn with the cursor on the image, and again after the cursor moves to the text
+/// file.
+/// Then: on the image the pane says `PNG, 40 × 20` and draws red cells under it, and on the
+/// text file it shows the text with no red cell left.
+///
+/// Why it matters: an image left on screen under the next entry's name shows the operator a file
+/// that is not the one the cursor marks.
+#[test]
+fn an_image_previews_as_its_caption_and_leaves_nothing_behind() {
+    // Given:
+    let root = tree(&["zz-notes.txt"]);
+    image::RgbImage::from_pixel(40, 20, image::Rgb([255, 0, 0]))
+        .save(root.path().join("photo.png"))
+        .unwrap();
+    let red = Color::Rgb(255, 0, 0);
+    let mut selector = open(root.path());
+
+    // When:
+    let on_image = render(&mut selector, 100, 30);
+    press(&mut selector, KeyCode::Down);
+    let on_text = render(&mut selector, 100, 30);
+
+    // Then:
+    let pane = panel(&on_image, "preview").expect("a preview pane");
+    assert_eq!(pane[0], "PNG, 40 × 20");
+    assert!(painted(&on_image, red) > 0, "no red cell drawn");
+    let pane = panel(&on_text, "preview").expect("a preview pane");
+    assert_eq!(pane[0], "payload");
+    assert_eq!(painted(&on_text, red), 0);
 }

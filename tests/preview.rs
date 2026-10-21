@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use blank::guard::Guard;
-use blank::plan::Plan;
-use blank::preview::{PREVIEW_BYTES, Preview, Totals, preview};
+use blank::plan::{Plan, short_size};
+use blank::preview::{MAX_IMAGE_FILE_BYTES, PREVIEW_BYTES, Preview, Totals, preview};
+use image::{GenericImageView, ImageFormat, Rgb, RgbImage};
 
 fn look(path: &Path) -> Preview {
     preview(path, &Guard::for_host(), &AtomicBool::new(false)).expect("nothing stops the preview")
@@ -221,4 +222,164 @@ fn a_walk_that_is_told_to_stop_returns_nothing() {
 
     // Then:
     assert!(matches!(plan, Ok(None)));
+}
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// Writes a PNG of `width` by `height` in one colour.
+fn png(path: &Path, width: u32, height: u32) {
+    RgbImage::from_pixel(width, height, Rgb([255, 0, 0]))
+        .save(path)
+        .unwrap();
+}
+
+/// Writes a PNG of one pixel whose header claims `width` by `height` in 8-bit RGBA, with the
+/// header checksum kept valid, so a decoder reads the claimed size before any pixel.
+fn png_claiming(path: &Path, width: u32, height: u32) {
+    png(path, 1, 1);
+    let mut bytes = fs::read(path).unwrap();
+    // The IHDR chunk follows the signature: its length, its type, 13 bytes of data, a CRC.
+    bytes[16..20].copy_from_slice(&width.to_be_bytes());
+    bytes[20..24].copy_from_slice(&height.to_be_bytes());
+    bytes[24] = 8;
+    bytes[25] = 6;
+    let crc = crc32(&bytes[12..29]);
+    bytes[29..33].copy_from_slice(&crc.to_be_bytes());
+    fs::write(path, bytes).unwrap();
+}
+
+/// The CRC-32 that PNG chunks carry.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in bytes {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// An image previews as the picture it holds.
+///
+/// Given: a PNG of 40 by 20 pixels.
+/// When: it is previewed.
+/// Then: the preview is the decoded picture, a PNG of 40 by 20.
+///
+/// Why it matters: a photo or a scan is told apart by what it shows, and its hex dump tells the
+/// operator nothing about which one is about to be destroyed.
+#[test]
+fn an_image_previews_as_the_picture_it_holds() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("photo.png");
+    png(&path, 40, 20);
+
+    // When:
+    let shown = look(&path);
+
+    // Then:
+    let Preview::Image(picture) = shown else {
+        panic!("an image previews as a picture, not {shown:?}");
+    };
+    assert_eq!(picture.format, ImageFormat::Png);
+    assert_eq!((picture.width, picture.height), (40, 20));
+    assert_eq!(picture.image.dimensions(), (40, 20));
+}
+
+/// A large image is shrunk for the pane, and keeps the size it has on the disk.
+///
+/// Given: a PNG of 2000 by 1000 pixels.
+/// When: it is previewed.
+/// Then: the picture says 2000 by 1000, and the image it holds is at most 1024 pixels wide.
+///
+/// Why it matters: a pane shows a few hundred pixels, and a full-size photo held for every cursor
+/// move costs memory and slows the draw that encodes it for the terminal.
+#[test]
+fn a_large_image_is_shrunk_for_the_pane_and_keeps_its_size() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("panorama.png");
+    png(&path, 2000, 1000);
+
+    // When:
+    let shown = look(&path);
+
+    // Then:
+    let Preview::Image(picture) = shown else {
+        panic!("an image previews as a picture, not {shown:?}");
+    };
+    assert_eq!((picture.width, picture.height), (2000, 1000));
+    assert!(picture.image.width() <= 1024, "{}", picture.image.width());
+}
+
+/// An image the preview will not decode falls back to its head, with the reason.
+///
+/// Given: a PNG whose header claims 6000 by 6000 pixels, a PNG larger than the file cap, and a
+/// file that starts like a PNG and holds nothing else.
+/// When: each is previewed.
+/// Then: each previews as its head bytes, and the reason names the claimed size, the file cap,
+/// and the failed decode in turn.
+///
+/// Why it matters: the files under preview are untrusted, and a header that claims a huge image
+/// or a huge file must cost the selector nothing beyond the head it already reads.
+#[test]
+fn an_image_the_preview_will_not_decode_falls_back_with_the_reason() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let claimed = root.path().join("bomb.png");
+    png_claiming(&claimed, 6000, 6000);
+    let oversized = root.path().join("huge.png");
+    png(&oversized, 1, 1);
+    fs::File::options()
+        .write(true)
+        .open(&oversized)
+        .unwrap()
+        .set_len(MAX_IMAGE_FILE_BYTES + 1)
+        .unwrap();
+    let damaged = root.path().join("damaged.png");
+    fs::write(&damaged, [PNG_SIGNATURE, &[0; 64]].concat()).unwrap();
+
+    for (path, expected) in [
+        (&claimed, "6000 × 6000".to_owned()),
+        (&oversized, short_size(MAX_IMAGE_FILE_BYTES)),
+        (&damaged, "cannot decode".to_owned()),
+    ] {
+        // When:
+        let shown = look(path);
+
+        // Then:
+        let Preview::Undecoded { head, reason } = shown else {
+            panic!("{path:?} previews as its head, not {shown:?}");
+        };
+        assert!(head.starts_with(PNG_SIGNATURE), "{path:?}");
+        assert!(reason.contains(&expected), "{path:?}: {reason}");
+    }
+}
+
+/// An image the cursor has already left is never decoded.
+///
+/// Given: a PNG, and a stop already requested, as a cursor move requests one.
+/// When: it is previewed.
+/// Then: nothing comes back.
+///
+/// Why it matters: each preview runs on a thread of its own, and a cursor held down over a
+/// folder of photos would otherwise decode every one it passes at once, at tens of megabytes
+/// each.
+#[test]
+fn an_image_the_cursor_has_left_is_never_decoded() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("photo.png");
+    png(&path, 40, 20);
+
+    // When:
+    let shown = preview(&path, &Guard::for_host(), &AtomicBool::new(true));
+
+    // Then:
+    assert!(shown.is_none(), "{shown:?}");
 }

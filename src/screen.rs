@@ -1,8 +1,8 @@
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -13,6 +13,8 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use ratatui_image::picker::Picker;
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
 
 use crate::engine::{Options, Stage, Update, destroy};
 use crate::guard::Guard;
@@ -24,6 +26,13 @@ use crate::view::{Action, Outcome, RunView};
 /// How long the screen waits for a key before it draws again. It sets the pace of the busy
 /// mark, and every report that arrives in between lands in the next frame.
 const FRAME: Duration = Duration::from_millis(80);
+/// A local terminal answers the graphics query in well under this, and one that never answers
+/// would otherwise hold the first screen closed for the two seconds the crate waits by default.
+const GRAPHICS_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// How this terminal draws images, asked once a session, because the query reads standard input
+/// and has to finish before the first key is read.
+static PICKER: OnceLock<Picker> = OnceLock::new();
 
 pub struct Ended {
     pub report: Result<(), Incomplete>,
@@ -75,6 +84,20 @@ impl Drop for FullScreen {
         let _ = self.0.show_cursor();
         let _ = disable_raw_mode();
     }
+}
+
+/// The session's picker, asked of the terminal on the first call. Call it inside a full screen
+/// and before any event is read.
+fn picker() -> Picker {
+    PICKER
+        .get_or_init(|| {
+            let options = QueryStdioOptions {
+                timeout: GRAPHICS_QUERY_TIMEOUT,
+                ..QueryStdioOptions::default()
+            };
+            Picker::from_query_stdio_with_options(options).unwrap_or_else(|_| Picker::halfblocks())
+        })
+        .clone()
 }
 
 /// Runs the plan on the full screen. `record` runs on the engine thread for every update, before
@@ -198,7 +221,7 @@ fn next_key(view: &mut RunView) -> io::Result<Action> {
 /// key still answers.
 pub fn pick(start: &Path, guard: Arc<Guard>, options: Options) -> io::Result<Vec<PathBuf>> {
     let mut screen = FullScreen::enter()?;
-    let (mut selector, first) = Selector::open(start, guard, options);
+    let (mut selector, first) = Selector::open(start, guard, options, picker());
     let (sender, receiver) = mpsc::channel();
     let read = {
         let sender = sender.clone();
@@ -256,7 +279,7 @@ enum Read {
 /// Every other way out of the screen destroys nothing.
 pub fn review(plan: &Plan, guard: Arc<Guard>, options: &Options) -> io::Result<bool> {
     let mut screen = FullScreen::enter()?;
-    let mut review = Review::new(plan, guard, options);
+    let mut review = Review::new(plan, guard, options, picker());
     let (sender, receiver) = mpsc::channel();
     loop {
         for result in receiver.try_iter() {

@@ -11,6 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_image::picker::Picker;
 
 fn plan_of(paths: &[&Path]) -> Plan {
     let paths: Vec<PathBuf> = paths.iter().map(|path| path.to_path_buf()).collect();
@@ -23,7 +24,12 @@ fn review(plan: &Plan) -> Review<'_> {
         passes: 2,
         allow_hard_links: false,
     };
-    let mut review = Review::new(plan, Arc::new(Guard::for_host()), &options);
+    let mut review = Review::new(
+        plan,
+        Arc::new(Guard::for_host()),
+        &options,
+        Picker::halfblocks(),
+    );
     settle(&mut review);
     review
 }
@@ -529,7 +535,12 @@ fn a_file_linked_outside_the_selection_is_marked() {
             passes: 2,
             allow_hard_links,
         };
-        let mut screen = Review::new(&plan, Arc::new(Guard::for_host()), &options);
+        let mut screen = Review::new(
+            &plan,
+            Arc::new(Guard::for_host()),
+            &options,
+            Picker::halfblocks(),
+        );
         lines(&render(&mut screen, 100, 30))
             .into_iter()
             .find(|line| line.contains("shared.txt"))

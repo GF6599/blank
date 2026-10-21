@@ -5,11 +5,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
+use ratatui::widgets::StatefulWidget;
+use ratatui_image::StatefulImage;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 
-use crate::chrome::{LOVE, MUTED, TEXT, cells, draw_text_panel, wrap};
+use crate::chrome::{
+    LOVE, MUTED, TEXT, cells, draw_text_panel, text_panel_area, text_panel_width, wrap,
+};
 use crate::guard::Guard;
 use crate::plan::{counted, short_size};
-use crate::preview::{Preview, Totals, preview};
+use crate::preview::{Picture, Preview, Totals, preview};
 
 const PREVIEW_TITLE: &str = "preview";
 const FAILED_MARK: &str = "!";
@@ -32,6 +38,9 @@ pub(crate) struct PreviewPane {
     preview: Option<Preview>,
     id: u64,
     stop: Arc<AtomicBool>,
+    picker: Picker,
+    /// The image of the preview, encoded for the terminal at the size it was last drawn.
+    image: Option<StatefulProtocol>,
 }
 
 /// A preview the pane asks the screen to read off its thread.
@@ -66,7 +75,11 @@ impl Drop for PreviewPane {
 }
 
 impl PreviewPane {
-    pub(crate) fn new(guard: Arc<Guard>, directory_heading: &'static str) -> PreviewPane {
+    pub(crate) fn new(
+        guard: Arc<Guard>,
+        directory_heading: &'static str,
+        picker: Picker,
+    ) -> PreviewPane {
         PreviewPane {
             guard,
             directory_heading,
@@ -74,6 +87,8 @@ impl PreviewPane {
             preview: None,
             id: 0,
             stop: Arc::new(AtomicBool::new(false)),
+            picker,
+            image: None,
         }
     }
 
@@ -86,6 +101,7 @@ impl PreviewPane {
         self.stop = Arc::new(AtomicBool::new(false));
         self.id += 1;
         self.preview = None;
+        self.image = None;
         self.previewed = path.map(Path::to_path_buf);
         let path = self.previewed.clone()?;
         Some(PreviewRequest {
@@ -104,16 +120,26 @@ impl PreviewPane {
         } = result
             && id == self.id
         {
+            if let Preview::Image(picture) = &found {
+                self.image = Some(self.picker.new_resize_protocol(picture.image.clone()));
+            }
             self.preview = Some(found);
         }
     }
 
-    /// `pending` says what the pane is doing while the read runs.
-    pub(crate) fn draw(&self, buffer: &mut Buffer, area: Rect, pending: &str) {
-        // The frame's two rules and a cell of indent either side.
-        let width = area.width.saturating_sub(4);
-        let lines = self.lines(width, pending);
+    /// `pending` says what the pane is doing while the read runs. An image goes under its
+    /// caption, in the rows the lines leave.
+    pub(crate) fn draw(&mut self, buffer: &mut Buffer, area: Rect, pending: &str) {
+        let lines = self.lines(text_panel_width(area), pending);
         draw_text_panel(buffer, area, PREVIEW_TITLE, &lines);
+        if let Some(image) = &mut self.image {
+            let text = text_panel_area(area);
+            let used = u16::try_from(lines.len())
+                .unwrap_or(u16::MAX)
+                .min(text.height);
+            let below = Rect::new(text.x, text.y + used, text.width, text.height - used);
+            StatefulImage::default().render(below, buffer, image);
+        }
     }
 
     fn lines(&self, width: u16, pending: &str) -> Vec<(String, Color)> {
@@ -133,6 +159,12 @@ impl PreviewPane {
             Preview::Text(lines) if lines.is_empty() => vec![("empty file".to_owned(), MUTED)],
             Preview::Text(lines) => lines.iter().map(|line| (line.clone(), TEXT)).collect(),
             Preview::Binary(head) => hex_dump(head, width),
+            Preview::Image(picture) => vec![(caption(picture), MUTED)],
+            Preview::Undecoded { head, reason } => wrap(reason, width)
+                .into_iter()
+                .map(|line| (line, MUTED))
+                .chain(hex_dump(head, width))
+                .collect(),
             Preview::Directory(totals) => {
                 std::iter::once((self.directory_heading.to_owned(), MUTED))
                     // A count cut to fit reads as a smaller one, so a part that does not fit whole is
@@ -153,6 +185,15 @@ impl PreviewPane {
             Preview::Unreadable(error) => failure(format!("cannot read: {error}")),
         }
     }
+}
+
+/// The format and the size the file holds, because the pane shows the image shrunk.
+fn caption(picture: &Picture) -> String {
+    let format = picture.format.extensions_str().first().map_or_else(
+        || format!("{:?}", picture.format),
+        |name| name.to_uppercase(),
+    );
+    format!("{format}, {} × {}", picture.width, picture.height)
 }
 
 /// The kinds a run would destroy, those with none left out.

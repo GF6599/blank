@@ -200,9 +200,18 @@ pub(crate) fn split_three(area: Rect) -> Option<[Rect; 3]> {
     ])
 }
 
-/// The cells a line of a text panel in `area` has, inside both rules and their indents.
+/// Where the lines of a text panel in `area` go: inside both rules and their indents.
+pub(crate) fn text_panel_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x + 1 + ROW_INDENT,
+        area.y + 1,
+        area.width.saturating_sub(2 + ROW_INDENT * 2),
+        area.height.saturating_sub(2),
+    )
+}
+
 pub(crate) fn text_panel_width(area: Rect) -> u16 {
-    area.width.saturating_sub(2 + ROW_INDENT * 2)
+    text_panel_area(area).width
 }
 
 /// Draws a frame with `title` cut into its top rule, and `lines` inside it from the top, each

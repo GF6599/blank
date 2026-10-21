@@ -13,6 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
 
 const MARGIN: u16 = 2;
 
@@ -59,9 +60,14 @@ fn every_screen_spans_the_terminal_less_its_margin() {
         allow_hard_links: false,
     };
     let mut view = RunView::new();
-    let (mut selector, load) = Selector::open(root.path(), Arc::clone(&guard), options);
+    let (mut selector, load) = Selector::open(
+        root.path(),
+        Arc::clone(&guard),
+        options,
+        Picker::halfblocks(),
+    );
     selector.loaded(load.run());
-    let mut review = Review::new(&plan, Arc::clone(&guard), &options);
+    let mut review = Review::new(&plan, Arc::clone(&guard), &options, Picker::halfblocks());
 
     for width in [80, 200] {
         // When:

@@ -8,6 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Style};
+use ratatui_image::picker::Picker;
 
 use crate::chrome::{
     CONTROLS_GAP, Column, LOVE, Line, MUTED, SUBTLE, TEXT, cells, draw_controls, draw_mark,
@@ -83,7 +84,7 @@ pub struct Review<'p> {
 }
 
 impl<'p> Review<'p> {
-    pub fn new(plan: &'p Plan, guard: Arc<Guard>, options: &Options) -> Review<'p> {
+    pub fn new(plan: &'p Plan, guard: Arc<Guard>, options: &Options, picker: Picker) -> Review<'p> {
         Review {
             header: header(plan, options),
             rows: tree(plan),
@@ -92,7 +93,7 @@ impl<'p> Review<'p> {
             first: 0,
             panel_rows: 1,
             answer: String::new(),
-            pane: PreviewPane::new(guard, "the run destroys"),
+            pane: PreviewPane::new(guard, "the run destroys", picker),
         }
     }
 
