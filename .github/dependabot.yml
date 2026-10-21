@@ -19,18 +19,6 @@ updates:
           - minor
           - patch
 
-  - package-ecosystem: gomod
-    directory: "/"
-    schedule:
-      interval: weekly
-    groups:
-      go-dependencies:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-
   - package-ecosystem: cargo
     directory: "/"
     schedule:
@@ -41,4 +29,3 @@ updates:
           - "*"
         update-types:
           - minor
-          - patch

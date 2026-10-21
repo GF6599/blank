@@ -134,7 +134,7 @@ def unlock_tree(root: Path) -> None:
                 log(f"  ! chmod skipped ({name}): {e}")
 
 
-# The same list app/guard.go refuses, because --force removes --root and
+# The same list src/guard.rs refuses, because --force removes --root and
 # unlock_tree clears the permissions that would otherwise have stopped it.
 SYSTEM_PATHS = [
     "/bin", "/boot", "/cores", "/dev", "/etc", "/home", "/lib", "/lib32",
