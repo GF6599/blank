@@ -1279,3 +1279,84 @@ fn an_image_previews_as_its_caption_and_leaves_nothing_behind() {
     assert_eq!(pane[0], "payload");
     assert_eq!(painted(&on_text, red), 0);
 }
+
+/// Whether 7zz is on the search path. A test that needs it skips without it, so the gate gives
+/// the same answer on a machine without the tool.
+fn lister_installed() -> bool {
+    let found = std::env::var_os("PATH")
+        .is_some_and(|search| std::env::split_paths(&search).any(|dir| dir.join("7zz").is_file()));
+    if !found {
+        eprintln!("skipped: 7zz is not installed");
+    }
+    found
+}
+
+/// An archive previews as its entries, each with its size, and the names in one column.
+///
+/// Given: a selector on a directory that holds a ZIP archive of a file, a directory, and a file
+/// whose name holds an escape sequence, on a machine with 7zz.
+/// When: it is drawn with the cursor on the archive.
+/// Then: the pane names the kind, then lists each entry with its size, the directory with a
+/// slash and no size, the escape as `\x1b`, and every name starting in the same column.
+///
+/// Why it matters: a size cut into a name, or names that start in different columns, make one
+/// entry read as another.
+#[test]
+fn an_archive_previews_as_its_entries_in_one_column() {
+    if !lister_installed() {
+        return;
+    }
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    fs::copy(fixtures.join("entries.zip"), root.path().join("bundle.zip")).unwrap();
+    let mut selector = open(root.path());
+
+    // When:
+    let buffer = render(&mut selector, 100, 30);
+
+    // Then:
+    let pane = panel(&buffer, "preview").expect("a preview pane");
+    assert_eq!(
+        pane[..4],
+        [
+            "ZIP archive",
+            "6 bytes  notes.txt",
+            "docs/",
+            r"1 byte  docs/red\x1b[31mname.txt",
+        ]
+    );
+    let column = |name: &str| {
+        let (_, row) = row_of(&buffer, name);
+        let line: String = row.iter().collect();
+        line[..line.find(name).unwrap()].chars().count()
+    };
+    assert_eq!(column("notes.txt"), column("docs/"));
+    assert_eq!(column("notes.txt"), column(r"docs/red\x1b"));
+}
+
+/// An archive with no entries says so.
+///
+/// Given: a selector on a directory that holds an empty ZIP archive, on a machine with 7zz.
+/// When: it is drawn with the cursor on the archive.
+/// Then: the pane says `ZIP archive, empty`.
+///
+/// Why it matters: a kind with nothing under it reads as a listing that has not arrived yet.
+#[test]
+fn an_empty_archive_says_it_is_empty() {
+    if !lister_installed() {
+        return;
+    }
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let end_of_central_directory = [&b"PK\x05\x06"[..], &[0; 18]].concat();
+    fs::write(root.path().join("empty.zip"), end_of_central_directory).unwrap();
+    let mut selector = open(root.path());
+
+    // When:
+    let buffer = render(&mut selector, 100, 30);
+
+    // Then:
+    let pane = panel(&buffer, "preview").expect("a preview pane");
+    assert_eq!(pane[0], "ZIP archive, empty");
+}

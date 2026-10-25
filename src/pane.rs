@@ -16,7 +16,7 @@ use crate::chrome::{
 use crate::guard::Guard;
 use crate::plan::{counted, short_size};
 use crate::preview::{Picture, Preview, Totals, preview};
-use crate::render::Renderer;
+use crate::render::{Entry, Renderer};
 
 const PREVIEW_TITLE: &str = "preview";
 const FAILED_MARK: &str = "!";
@@ -25,6 +25,8 @@ const FAILED_MARK: &str = "!";
 const HEX_OVERHEAD: u16 = 4 + 2 + 2 - 1;
 const HEX_CELLS_PER_BYTE: u16 = 4;
 const HEX_MOST_BYTES: u16 = 16;
+/// "1023 bytes", the widest size there is, so the names of a listing line up.
+const ENTRY_SIZE_CELLS: usize = 10;
 
 /// The preview of the row under a cursor. It never reads the disk itself: it asks for a read
 /// when the cursor reaches another path, and a newer read stops the walk of the one before it,
@@ -174,6 +176,14 @@ impl PreviewPane {
             Preview::Binary(head) => hex_dump(head, width),
             Preview::Image(picture) => vec![(caption(picture), MUTED)],
             Preview::Rendered { kind, .. } => vec![(kind.caption().to_owned(), MUTED)],
+            Preview::Listing { archive, entries } if entries.is_empty() => {
+                vec![(format!("{}, empty", archive.caption()), MUTED)]
+            }
+            Preview::Listing { archive, entries } => {
+                std::iter::once((archive.caption().to_owned(), MUTED))
+                    .chain(entries.iter().map(|entry| (entry_line(entry), TEXT)))
+                    .collect()
+            }
             Preview::Undecoded { reason, contents } => wrap(reason, width)
                 .into_iter()
                 .map(|line| (line, MUTED))
@@ -208,6 +218,19 @@ fn caption(picture: &Picture) -> String {
         |name| name.to_uppercase(),
     );
     format!("{format}, {} × {}", picture.width, picture.height)
+}
+
+fn entry_line(entry: &Entry) -> String {
+    let size = match entry.size {
+        Some(size) if !entry.directory => short_size(size),
+        _ => String::new(),
+    };
+    let slash = if entry.directory && !entry.path.ends_with('/') {
+        "/"
+    } else {
+        ""
+    };
+    format!("{size:>ENTRY_SIZE_CELLS$}  {}{slash}", entry.path)
 }
 
 /// The kinds a run would destroy, those with none left out.

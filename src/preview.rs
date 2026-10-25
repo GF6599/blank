@@ -10,7 +10,7 @@ use rustix::fs::{FileType, Mode, OFlags, fstat};
 
 use crate::guard::Guard;
 use crate::plan::{Plan, Statistics, short_size};
-use crate::render::{Kind, Renderer};
+use crate::render::{Archive, Entry, Kind, Renderer, entries};
 use crate::terminal::{escape, escape_path};
 
 /// How much of a file a preview reads. A preview runs on every cursor move, so it never reads
@@ -25,10 +25,10 @@ pub const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
 /// The longest side of the image a preview keeps. A pane shows a few hundred pixels, and the
 /// image is encoded for the terminal on every draw at a new size.
 const PREVIEW_IMAGE_SIDE: u32 = 1024;
-/// How long an image waits before its decode or its render. A cursor held down leaves an entry
-/// sooner, and its next move stops the work before it starts, so only the image it rests on is
-/// decoded or drawn.
-const IMAGE_SETTLE: Duration = Duration::from_millis(120);
+/// How long a file waits before its decode or its tool. A cursor held down leaves an entry
+/// sooner, and its next move stops the work before it starts, so only the file it rests on is
+/// decoded, drawn or listed.
+const SETTLE: Duration = Duration::from_millis(120);
 /// The formats `image` is built with.
 const IMAGE_FORMATS: [ImageFormat; 6] = [
     ImageFormat::Png,
@@ -55,7 +55,12 @@ pub enum Preview {
         kind: Kind,
         image: DynamicImage,
     },
-    /// A file the preview would not decode or draw, as its contents, and why.
+    /// The entries of an archive, as a tool outside blank listed them.
+    Listing {
+        archive: Archive,
+        entries: Vec<Entry>,
+    },
+    /// A file the preview would not decode, draw or list, as its contents, and why.
     Undecoded {
         reason: String,
         contents: Box<Preview>,
@@ -153,8 +158,8 @@ pub fn preview(
         .unwrap_or_else(|error| Some(Preview::Unreadable(error.to_string())))
 }
 
-/// Reads a regular file, or returns nothing for an image the cursor left before the decode or
-/// the render ended.
+/// Reads a regular file, or returns nothing for a file the cursor left before the decode or the
+/// tool ended.
 fn read_file(
     path: &Path,
     renderer: &Renderer,
@@ -163,20 +168,23 @@ fn read_file(
     let (file, size) = open_regular(path)?;
     let mut head = Vec::with_capacity(PREVIEW_BYTES);
     (&file).take(PREVIEW_BYTES as u64).read_to_end(&mut head)?;
-    let drawing = match image::guess_format(&head) {
-        Ok(format) if IMAGE_FORMATS.contains(&format) => Drawing::Decode(format),
+    let work = match image::guess_format(&head) {
+        Ok(format) if IMAGE_FORMATS.contains(&format) => Work::Decode(format),
         _ => match Kind::of(&head) {
-            Some(kind) => Drawing::Render(kind),
+            Some(kind) => Work::Tool(kind),
             None => return Ok(Some(contents(head))),
         },
     };
     if !settled(stop) {
         return Ok(None);
     }
-    let drawn = match drawing {
-        Drawing::Decode(format) => decode(file, size, format).map(Preview::Image),
-        Drawing::Render(kind) => match renderer.render(kind, file, stop) {
+    let drawn = match work {
+        Work::Decode(format) => decode(file, size, format).map(Preview::Image),
+        Work::Tool(kind) => match renderer.render(kind, file, stop) {
             None => return Ok(None),
+            Some(Ok(output)) if let Kind::Archive(archive) = kind => entries(output)
+                .map(|entries| Preview::Listing { archive, entries })
+                .map_err(|error| format!("cannot read the listing: {error}")),
             Some(Ok(output)) => {
                 let size = output.metadata()?.len();
                 decode(output, size, ImageFormat::Png).map(|picture| Preview::Rendered {
@@ -193,10 +201,11 @@ fn read_file(
     })))
 }
 
-/// How a file becomes a picture: decoded inside blank, or drawn by a tool outside it.
-enum Drawing {
+/// How a file becomes a preview other than its contents: decoded inside blank, or drawn or
+/// listed by a tool outside it.
+enum Work {
     Decode(ImageFormat),
-    Render(Kind),
+    Tool(Kind),
 }
 
 /// Waits for the cursor to settle, and says whether it stayed on this entry.
@@ -204,7 +213,7 @@ fn settled(stop: &AtomicBool) -> bool {
     if stop.load(Ordering::Relaxed) {
         return false;
     }
-    thread::sleep(IMAGE_SETTLE);
+    thread::sleep(SETTLE);
     !stop.load(Ordering::Relaxed)
 }
 

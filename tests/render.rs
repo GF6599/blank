@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use blank::guard::Guard;
 use blank::preview::{Preview, preview};
-use blank::render::{Kind, Renderer, TOOL_TIMEOUT};
+use blank::render::{Archive, Entry, Kind, Renderer, TOOL_TIMEOUT};
 use image::{DynamicImage, GenericImageView, Rgba};
 use nix::errno::Errno;
 use nix::sys::signal::kill;
@@ -23,12 +23,12 @@ fn look(path: &Path, renderer: &Renderer) -> Preview {
 }
 
 /// A tool directory that holds `tool`, which starts a process of its own, records both process
-/// ids and the temporary directory it was given, then waits for longer than any test waits.
-fn slow_tool(tool: &str) -> (tempfile::TempDir, PathBuf) {
+/// ids and the temporary directory it was given, then runs `rest`.
+fn recording_tool(tool: &str, rest: &str) -> (tempfile::TempDir, PathBuf) {
     let tools = tempfile::tempdir().unwrap();
     let started = tools.path().join("started");
     let script = format!(
-        "#!/bin/sh\n/bin/sleep 60 &\necho \"$$ $! $TMPDIR\" > '{started}.part'\n/bin/mv '{started}.part' '{started}'\nwait\n",
+        "#!/bin/sh\n/bin/sleep 60 &\necho \"$$ $! $TMPDIR\" > '{started}.part'\n/bin/mv '{started}.part' '{started}'\n{rest}\n",
         started = started.display()
     );
     let path = tools.path().join(tool);
@@ -37,7 +37,20 @@ fn slow_tool(tool: &str) -> (tempfile::TempDir, PathBuf) {
     (tools, started)
 }
 
-/// The processes and the temporary directory the slow tool recorded, once it started.
+/// A tool that waits for longer than any test waits.
+fn slow_tool(tool: &str) -> (tempfile::TempDir, PathBuf) {
+    recording_tool(tool, "wait")
+}
+
+/// A tool that lists the same entry for as long as it runs.
+fn endless_lister(tool: &str) -> (tempfile::TempDir, PathBuf) {
+    recording_tool(
+        tool,
+        "while :; do printf 'Path = endless.txt\\nSize = 1\\n\\n'; done",
+    )
+}
+
+/// The processes and the temporary directory the tool recorded, once it started.
 fn started(record: &Path) -> ([Pid; 2], PathBuf) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !record.exists() {
@@ -298,11 +311,11 @@ fn a_font_previews_as_a_sample_of_its_letters() {
 ///
 /// Given: a file of each kind, and a search path with no tools on it.
 /// When: each is previewed.
-/// Then: each previews as its contents, binary for four and text for the SVG, and the reason
-/// names its tool.
+/// Then: each previews as its contents, binary for all but the SVG, which is text, and the
+/// reason names its tool.
 ///
 /// Why it matters: every tool is optional, and an operator who sees only bytes needs to know
-/// what to install to see the picture.
+/// what to install to see the picture or the entries.
 #[test]
 fn a_kind_whose_tool_is_missing_falls_back_naming_the_tool() {
     // Given:
@@ -310,7 +323,7 @@ fn a_kind_whose_tool_is_missing_falls_back_naming_the_tool() {
     let nothing = tempfile::tempdir().unwrap();
     let renderer = Renderer::searching(nothing.path());
     let box_head = |brand: &[u8]| [&[0, 0, 0, 0x18][..], b"ftyp", brand, &[0; 32]].concat();
-    let cases: [(&str, Vec<u8>, &str); 5] = [
+    let cases: [(&str, Vec<u8>, &str); 6] = [
         ("report.pdf", b"%PDF-1.4\n%\x00\x01\n".to_vec(), "pdftoppm"),
         ("clip.mp4", box_head(b"isom"), "ffmpegthumbnailer"),
         (
@@ -320,6 +333,7 @@ fn a_kind_whose_tool_is_missing_falls_back_naming_the_tool() {
         ),
         ("photo.heic", box_head(b"heic"), "magick"),
         ("face.ttf", [&[0, 1, 0, 0][..], &[0; 32]].concat(), "magick"),
+        ("bundle.zip", [&b"PK\x03\x04"[..], &[0; 32]].concat(), "7zz"),
     ];
 
     for (name, contents, tool) in cases {
@@ -491,10 +505,11 @@ fn an_svg_that_claims_a_huge_canvas_is_refused_at_once() {
     assert!(took < Duration::from_secs(2), "{took:?}");
 }
 
-/// A text file that starts like a video or a font header previews as text, with no tool.
+/// A text file that starts like a video, a font or a tar header previews as text, with no tool.
 ///
 /// Given: a text file that starts with `G` and holds another `G` 188 bytes on, as a transport
-/// stream does, and a text file that starts with `true`, as an old TrueType font does.
+/// stream does, a text file that starts with `true`, as an old TrueType font does, and a text
+/// file that holds `ustar` 257 bytes on, as a tar archive does.
 /// When: each is previewed with no tools on the search path.
 /// Then: each previews as its text, with no line about a tool.
 ///
@@ -509,9 +524,12 @@ fn a_text_file_that_starts_like_a_media_header_previews_as_text() {
     let mut stream = "G".to_owned();
     stream.push_str(&"a".repeat(187));
     stream.push_str("G and the rest of the note\n");
+    let mut tar = "a".repeat(257);
+    tar.push_str("ustar and the rest of the note\n");
     let cases = [
         ("stream.txt", stream),
         ("flags.txt", "true\nfalse\n".to_owned()),
+        ("archive.txt", tar),
     ];
 
     for (name, text) in cases {
@@ -558,4 +576,124 @@ fn an_svg_cannot_read_a_file_through_a_coder_blank_does_not_allow() {
         panic!("an SVG that reads a note falls back, not {shown:?}");
     };
     assert!(reason.contains("security policy"), "{reason}");
+}
+
+/// An archive previews as its entries, listed by 7zz.
+///
+/// Given: a ZIP, a 7z and a tar archive, each of a file, a directory, and a file whose name
+/// holds an escape sequence.
+/// When: each is previewed on a machine with 7zz.
+/// Then: each previews as a listing of its kind with the three entries, their sizes, the
+/// directory marked, and the escape as `\x1b`.
+///
+/// Why it matters: the names inside an archive tell the operator which archive it is, and they
+/// are written by whoever made the archive, so a control character in one must not drive the
+/// terminal.
+#[test]
+fn an_archive_previews_as_its_entries() {
+    if !installed("7zz") {
+        return;
+    }
+    // Given:
+    let cases = [
+        ("entries.zip", Archive::Zip),
+        ("entries.7z", Archive::SevenZip),
+        ("entries.tar", Archive::Tar),
+    ];
+    let entry = |path: &str, size: u64, directory: bool| Entry {
+        path: path.to_owned(),
+        size: Some(size),
+        directory,
+    };
+
+    for (name, expected) in cases {
+        // When:
+        let shown = look(&Path::new(FIXTURES).join(name), &Renderer::for_host());
+
+        // Then:
+        let Preview::Listing {
+            archive,
+            mut entries,
+        } = shown
+        else {
+            panic!("{name} previews as its entries, not {shown:?}");
+        };
+        assert_eq!(archive, expected, "{name}");
+        entries.sort_by(|one, other| one.path.cmp(&other.path));
+        assert_eq!(
+            entries,
+            [
+                entry("docs", 0, true),
+                entry(r"docs/red\x1b[31mname.txt", 1, false),
+                entry("notes.txt", 6, false),
+            ],
+            "{name}"
+        );
+    }
+}
+
+/// An archive whose names are encrypted falls back at once, and no tool waits for a password.
+///
+/// Given: a 7z archive whose entry names are encrypted.
+/// When: it is previewed on a machine with 7zz.
+/// Then: the preview falls back within two seconds, with a reason about the password.
+///
+/// Why it matters: a tool that asks for a password waits on the terminal or reads the archive as
+/// one, and either holds the preview until the time limit kills it.
+#[test]
+fn an_archive_with_encrypted_names_falls_back_without_a_password_prompt() {
+    if !installed("7zz") {
+        return;
+    }
+    // Given:
+    let path = Path::new(FIXTURES).join("locked.7z");
+    let began = Instant::now();
+
+    // When:
+    let shown = look(&path, &Renderer::for_host());
+
+    // Then:
+    let took = began.elapsed();
+    let Preview::Undecoded { reason, .. } = shown else {
+        panic!("a locked archive falls back, not {shown:?}");
+    };
+    assert!(reason.contains("password"), "{reason}");
+    assert!(took < Duration::from_secs(2), "{took:?}");
+}
+
+/// A listing longer than a preview reads is cut, and its tool is killed.
+///
+/// Given: a ZIP archive, and a 7zz that lists the same entry for as long as it runs.
+/// When: it is previewed.
+/// Then: the preview is a listing of whole entries well before the time limit, and the tool and
+/// the process it started are gone.
+///
+/// Why it matters: an archive of millions of entries lists for longer than the time limit, and
+/// would fill the disk with a listing the pane never shows.
+#[test]
+fn a_listing_longer_than_a_preview_reads_is_cut_and_its_tool_killed() {
+    // Given:
+    let path = Path::new(FIXTURES).join("entries.zip");
+    let (tools, record) = endless_lister("7zz");
+    let renderer = Renderer::searching(tools.path());
+    let began = Instant::now();
+
+    // When:
+    let shown = look(&path, &renderer);
+
+    // Then:
+    let took = began.elapsed();
+    assert!(took < TOOL_TIMEOUT / 2, "{took:?}");
+    let Preview::Listing { entries, .. } = shown else {
+        panic!("a cut listing previews as its entries, not {shown:?}");
+    };
+    let whole = Entry {
+        path: "endless.txt".to_owned(),
+        size: Some(1),
+        directory: false,
+    };
+    assert!(!entries.is_empty());
+    assert!(entries.iter().all(|entry| *entry == whole), "{entries:?}");
+    let (pids, _) = started(&record);
+    assert_gone(pids);
 }

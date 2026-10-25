@@ -31,6 +31,10 @@ const MAGICK_LIMITS: [&str; 18] = [
     "-limit", "memory", "256MiB", "-limit", "map", "512MiB", "-limit", "disk", "1GiB", "-limit",
     "area", "128MP", "-limit", "width", "16KP", "-limit", "height", "16KP",
 ];
+/// How much of a listing a preview reads. A tool still listing past it is killed, because an
+/// archive of millions of entries lists for longer than the time limit, and the pane shows a few
+/// dozen.
+pub const LISTING_BYTES: u64 = 64 * 1024;
 const MOST_MESSAGE_CHARS: usize = 200;
 const MESSAGES_TAIL_BYTES: u64 = 4096;
 /// The only coders magick may use. An SVG reaches any coder by a path to a file planted beside
@@ -50,7 +54,7 @@ const HEIF_BRANDS: [&[u8]; 10] = [
     b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1",
 ];
 
-/// A kind of file that a tool outside blank draws.
+/// A kind of file that a tool outside blank draws or lists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Pdf,
@@ -58,6 +62,65 @@ pub enum Kind {
     Svg,
     Heic,
     Font,
+    Archive(Archive),
+}
+
+/// An archive format that holds named entries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Archive {
+    Zip,
+    SevenZip,
+    Rar,
+    Rar5,
+    Tar,
+}
+
+impl Archive {
+    fn of(head: &[u8], binary: bool) -> Option<Archive> {
+        const ZIP: [&[u8]; 2] = [b"PK\x03\x04", b"PK\x05\x06"];
+        const TAR_MAGIC: std::ops::Range<usize> = 257..262;
+        if ZIP.iter().any(|magic| head.starts_with(magic)) {
+            Some(Archive::Zip)
+        } else if head.starts_with(b"7z\xbc\xaf\x27\x1c") {
+            Some(Archive::SevenZip)
+        } else if head.starts_with(b"Rar!\x1a\x07\x00") {
+            Some(Archive::Rar)
+        } else if head.starts_with(b"Rar!\x1a\x07\x01\x00") {
+            Some(Archive::Rar5)
+        } else if binary && head.get(TAR_MAGIC) == Some(b"ustar") {
+            Some(Archive::Tar)
+        } else {
+            None
+        }
+    }
+
+    /// The name 7zz gives the format.
+    fn format(self) -> &'static str {
+        match self {
+            Archive::Zip => "zip",
+            Archive::SevenZip => "7z",
+            Archive::Rar => "rar",
+            Archive::Rar5 => "rar5",
+            Archive::Tar => "tar",
+        }
+    }
+
+    pub fn caption(self) -> &'static str {
+        match self {
+            Archive::Zip => "ZIP archive",
+            Archive::SevenZip => "7z archive",
+            Archive::Rar | Archive::Rar5 => "RAR archive",
+            Archive::Tar => "tar archive",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The name, escaped.
+    pub path: String,
+    pub size: Option<u64>,
+    pub directory: bool,
 }
 
 impl Kind {
@@ -78,6 +141,8 @@ impl Kind {
             Some(Kind::Video)
         } else if binary && [&[0, 1, 0, 0][..], b"OTTO", b"true", b"ttcf"].contains(&at(0..4)) {
             Some(Kind::Font)
+        } else if let Some(archive) = Archive::of(head, binary) {
+            Some(Kind::Archive(archive))
         } else if is_svg(head) {
             Some(Kind::Svg)
         } else {
@@ -90,7 +155,13 @@ impl Kind {
             Kind::Pdf => "pdftoppm",
             Kind::Video => "ffmpegthumbnailer",
             Kind::Svg | Kind::Heic | Kind::Font => "magick",
+            Kind::Archive(_) => "7zz",
         }
+    }
+
+    /// Whether the tool writes what it found on its standard output, rather than a picture.
+    fn lists(self) -> bool {
+        matches!(self, Kind::Archive(_))
     }
 
     /// What the pane says above the render, because the render is not the file itself.
@@ -101,6 +172,7 @@ impl Kind {
             Kind::Svg => "SVG",
             Kind::Heic => "HEIC",
             Kind::Font => "font sample",
+            Kind::Archive(archive) => archive.caption(),
         }
     }
 
@@ -111,10 +183,12 @@ impl Kind {
             Kind::Svg => "an SVG",
             Kind::Heic => "a HEIC photo",
             Kind::Font => "a font",
+            Kind::Archive(_) => "an archive",
         }
     }
 
-    /// The arguments that draw the file on standard input as a PNG at `out`.
+    /// The arguments that draw the file on standard input as a PNG at `out`, or list it on
+    /// standard output.
     fn args(self, out: &Path) -> Vec<OsString> {
         let owned = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
         let mut args = Vec::new();
@@ -152,6 +226,20 @@ impl Kind {
                 let mut output = OsString::from("png:");
                 output.push(out);
                 args.push(output);
+            }
+            Kind::Archive(archive) => {
+                // A password is given so that 7zz never asks for one, and the format is named
+                // so that 7zz reads the file as that format and no other.
+                let format = format!("-t{}", archive.format());
+                args.extend(owned(&[
+                    "l",
+                    "-ba",
+                    "-slt",
+                    "-sccUTF-8",
+                    "-p-",
+                    &format,
+                    INPUT,
+                ]));
             }
         }
         args
@@ -193,8 +281,8 @@ fn is_svg(head: &[u8]) -> bool {
     }
 }
 
-/// Runs the tools that draw a kind of file, and owns the processes and the private directory
-/// they write in. `close` kills every tool still running and removes the directory.
+/// Runs the tools that draw or list a kind of file, and owns the processes and the private
+/// directory they write in. `close` kills every tool still running and removes the directory.
 pub struct Renderer {
     /// The search path for the tools, or the platform default when unset.
     search: Option<OsString>,
@@ -228,9 +316,9 @@ impl Renderer {
         }
     }
 
-    /// Draws `input`, read from its first byte, with the tool of `kind`, and returns the PNG it
-    /// drew, already removed from the directory. It returns nothing once `stop` is set or the
-    /// renderer is closed, and kills the tool then.
+    /// Draws or lists `input`, read from its first byte, with the tool of `kind`, and returns the
+    /// PNG or the listing, already removed from the directory. It returns nothing once `stop` is
+    /// set or the renderer is closed, and kills the tool then.
     pub fn render(
         &self,
         kind: Kind,
@@ -259,6 +347,10 @@ impl Renderer {
                 Ok(Some(status)) => {
                     state.running.remove(&id);
                     break finished(tool, status, &out, &messages);
+                }
+                Ok(None) if kind.lists() && listed_past_the_read(&out) => {
+                    end(state.running.remove(&id)?);
+                    break File::open(&out).map_err(|error| format!("cannot read: {error}"));
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -321,13 +413,18 @@ impl State {
         let cannot = |error: io::Error| format!("cannot start {tool}: {error}");
         input.seek(SeekFrom::Start(0)).map_err(cannot)?;
         let dir = self.directory().map_err(cannot)?;
-        let out = dir.join(format!("{id}.png"));
+        let out = dir.join(format!("{id}.{}", if kind.lists() { "txt" } else { "png" }));
         let messages = dir.join(format!("{id}.log"));
+        let stdout = if kind.lists() {
+            Stdio::from(File::create(&out).map_err(cannot)?)
+        } else {
+            Stdio::null()
+        };
         let mut command = Command::new(tool);
         command
             .args(kind.args(&out))
             .stdin(input.try_clone().map_err(cannot)?)
-            .stdout(Stdio::null())
+            .stdout(stdout)
             .stderr(File::create(&messages).map_err(cannot)?)
             // A tool that keeps a file of its own while it works keeps it here, so the close
             // removes what a killed tool could not.
@@ -341,7 +438,7 @@ impl State {
             command.env("PATH", search);
         }
         let child = command.spawn().map_err(|error| {
-            remove(&[&messages]);
+            remove(&[&out, &messages]);
             if error.kind() == io::ErrorKind::NotFound {
                 format!("install {tool} to preview {}", kind.noun())
             } else {
@@ -377,14 +474,23 @@ impl State {
     }
 }
 
-/// The picture a finished tool drew, or the last thing it said when it failed.
+/// The picture or the listing of a finished tool, or the last thing it said when it failed.
 fn finished(tool: &str, status: ExitStatus, out: &Path, messages: &Path) -> Result<File, String> {
     if !status.success() {
         let said = tail(messages).unwrap_or_default();
-        let last = String::from_utf8_lossy(&said)
+        let said = String::from_utf8_lossy(&said);
+        let lines: Vec<&str> = said
             .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        // 7zz ends with a summary such as `Headers Error`, after the line that says what failed.
+        let error = lines
+            .iter()
             .rev()
-            .find(|line| !line.trim().is_empty())
+            .find_map(|line| line.strip_prefix("ERROR: "));
+        let last = error
+            .map(|line| line.strip_prefix(&format!("{INPUT} : ")).unwrap_or(line))
+            .or(lines.last().copied())
             .map(|line| escape(&line.chars().take(MOST_MESSAGE_CHARS).collect::<String>()));
         return Err(match last {
             Some(line) => format!("{tool} failed: {line}"),
@@ -403,6 +509,40 @@ fn tail(messages: &Path) -> io::Result<Vec<u8>> {
     let mut said = Vec::new();
     file.read_to_end(&mut said)?;
     Ok(said)
+}
+
+fn listed_past_the_read(out: &Path) -> bool {
+    fs::metadata(out).is_ok_and(|metadata| metadata.len() > LISTING_BYTES)
+}
+
+/// The entries of a listing in the form `7zz l -slt` writes: a block of `name = value` lines for
+/// each entry, and an empty line after it. 7zz writes a newline inside a name or a comment as
+/// `_`, so no name can add a line of its own. A listing cut at `LISTING_BYTES` loses its last
+/// entry, which can be cut too.
+pub fn entries(listing: File) -> io::Result<Vec<Entry>> {
+    let length = listing.metadata()?.len();
+    let mut text = Vec::new();
+    listing.take(LISTING_BYTES).read_to_end(&mut text)?;
+    let text = String::from_utf8_lossy(&text);
+    let mut blocks: Vec<&str> = text.split("\n\n").collect();
+    if length > LISTING_BYTES {
+        blocks.pop();
+    }
+    Ok(blocks.into_iter().filter_map(entry).collect())
+}
+
+fn entry(block: &str) -> Option<Entry> {
+    let field = |name: &str| {
+        block
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(" = "))
+    };
+    Some(Entry {
+        path: escape(field("Path")?),
+        size: field("Size").and_then(|size| size.parse().ok()),
+        directory: field("Folder") == Some("+")
+            || field("Attributes").is_some_and(|attributes| attributes.starts_with('D')),
+    })
 }
 
 /// Kills the tool and every process it started, then reaps it.
