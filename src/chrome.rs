@@ -14,6 +14,7 @@ pub(crate) const IRIS: Color = Color::Rgb(0xc4, 0xa7, 0xe7);
 pub(crate) const TEXT: Color = Color::Rgb(0xe0, 0xde, 0xf4);
 pub(crate) const SUBTLE: Color = Color::Rgb(0x90, 0x8c, 0xaa);
 pub(crate) const MUTED: Color = Color::Rgb(0x6e, 0x6a, 0x86);
+pub(crate) const ROSE: Color = Color::Rgb(0xeb, 0xbc, 0xba);
 pub(crate) const HIGHLIGHT_MED: Color = Color::Rgb(0x40, 0x3d, 0x52);
 
 /// The one corner lever. Every rule a screen draws reads its runes from here.
@@ -214,6 +215,8 @@ pub(crate) fn text_panel_width(area: Rect) -> u16 {
     text_panel_area(area).width
 }
 
+pub(crate) type Row = Vec<(String, Color)>;
+
 /// Draws a frame with `title` cut into its top rule, and `lines` inside it from the top, each
 /// cut to the width of the frame.
 pub(crate) fn draw_text_panel(
@@ -222,19 +225,26 @@ pub(crate) fn draw_text_panel(
     title: &str,
     lines: &[(String, Color)],
 ) {
+    let rows: Vec<Row> = lines.iter().map(|line| vec![line.clone()]).collect();
+    draw_rows_panel(buffer, area, title, &rows);
+}
+
+/// Draws a frame as `draw_text_panel` does, with each line drawn run by run.
+pub(crate) fn draw_rows_panel(buffer: &mut Buffer, area: Rect, title: &str, rows: &[Row]) {
     let width = text_panel_width(area);
     let Some(inner) = draw_frame(buffer, area, title) else {
         return;
     };
-    for (offset, (text, color)) in (0..inner.height).zip(lines) {
-        let shown = clamp_head(text, width);
-        put(
-            buffer,
-            inner.x + ROW_INDENT,
-            inner.y + offset,
-            shown,
-            Style::new().fg(*color),
-        );
+    for (offset, row) in (0..inner.height).zip(rows) {
+        let mut x = inner.x + ROW_INDENT;
+        let mut left = width;
+        for (text, color) in row {
+            let shown = clamp_head(text, left);
+            let used = cells(&shown);
+            put(buffer, x, inner.y + offset, shown, Style::new().fg(*color));
+            x += used;
+            left -= used;
+        }
     }
 }
 

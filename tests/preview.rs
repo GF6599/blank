@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use blank::guard::Guard;
+use blank::highlight::Token;
 use blank::plan::{Plan, short_size};
 use blank::preview::{MAX_IMAGE_FILE_BYTES, PREVIEW_BYTES, Preview, Totals, preview};
 use blank::render::Renderer;
@@ -397,4 +398,94 @@ fn an_image_the_cursor_has_left_is_never_decoded() {
 
     // Then:
     assert!(shown.is_none(), "{shown:?}");
+}
+
+/// The text and the token of every span of a highlighted preview, line by line.
+fn highlighted(path: &Path) -> Vec<Vec<(String, Token)>> {
+    let shown = look(path);
+    let Preview::Code(lines) = shown else {
+        panic!("{path:?} previews as highlighted lines, not {shown:?}");
+    };
+    lines
+}
+
+fn token_of(lines: &[Vec<(String, Token)>], text: &str) -> Token {
+    lines
+        .iter()
+        .flatten()
+        .find(|(span, _)| span.contains(text))
+        .unwrap_or_else(|| panic!("no span holds {text:?}: {lines:?}"))
+        .1
+}
+
+/// A source file previews as highlighted lines, with every control and format character still
+/// escaped.
+///
+/// Given: a Rust file whose comment ends with a right-to-left override, whose string holds an
+/// escape sequence, whose body is indented by a tab, and whose last statement holds a carriage
+/// return.
+/// When: it is previewed.
+/// Then: the lines read as the text preview reads them, the override as `\u{202e}`, the escape
+/// as `\x1b`, the tab as spaces and the carriage return as `\x0d`, and the comment, the keyword
+/// and the string each have their own token.
+///
+/// Why it matters: a highlighted line is still the file's own text, and a control or format
+/// character in it must not drive the terminal or reorder the line.
+#[test]
+fn a_source_file_previews_as_highlighted_lines_still_escaped() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("main.rs");
+    fs::write(
+        &path,
+        "// a note\u{202e}\nfn main() {\n\tlet s = \"red \x1b[31m\";\n    let a\r= 1;\n}\n",
+    )
+    .unwrap();
+
+    // When:
+    let lines = highlighted(&path);
+
+    // Then:
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| line.iter().map(|(span, _)| span.as_str()).collect())
+        .collect();
+    assert_eq!(
+        text,
+        [
+            r"// a note\u{202e}",
+            "fn main() {",
+            r#"    let s = "red \x1b[31m";"#,
+            r"    let a\x0d= 1;",
+            "}",
+        ]
+    );
+    assert_eq!(token_of(&lines, "a note"), Token::Comment);
+    assert_eq!(token_of(&lines, "fn"), Token::Keyword);
+    assert_eq!(token_of(&lines, r"red \x1b[31m"), Token::String);
+}
+
+/// A JSON file previews with its keys, its strings and its numbers told apart.
+///
+/// Given: a JSON object with a string value that holds a zero width space, and a number.
+/// When: it is previewed.
+/// Then: the key, the string and the number each have their own token, and the space reads as
+/// `\u{200b}`.
+///
+/// Why it matters: in a JSON file the keys say what the file is, and a value that reads as a key
+/// misleads the operator about which file is under the cursor.
+#[test]
+fn a_json_file_previews_with_keys_strings_and_numbers_apart() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("settings.json");
+    fs::write(&path, "{\"name\": \"a\u{200b}b\", \"count\": 3}\n").unwrap();
+
+    // When:
+    let lines = highlighted(&path);
+
+    // Then:
+    assert_eq!(token_of(&lines, "name"), Token::Key);
+    assert_eq!(token_of(&lines, r"a\u{200b}b"), Token::String);
+    assert_eq!(token_of(&lines, "3"), Token::Constant);
 }

@@ -11,9 +11,11 @@ use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 
 use crate::chrome::{
-    LOVE, MUTED, TEXT, cells, draw_text_panel, text_panel_area, text_panel_width, wrap,
+    FOAM, GOLD, IRIS, LOVE, MUTED, PINE, ROSE, Row, SUBTLE, TEXT, cells, draw_rows_panel,
+    text_panel_area, text_panel_width, wrap,
 };
 use crate::guard::Guard;
+use crate::highlight::Token;
 use crate::plan::{counted, short_size};
 use crate::preview::{Picture, Preview, Totals, preview};
 use crate::render::{Entry, Renderer};
@@ -142,7 +144,7 @@ impl PreviewPane {
     /// caption, in the rows the lines leave.
     pub(crate) fn draw(&mut self, buffer: &mut Buffer, area: Rect, pending: &str) {
         let lines = self.lines(text_panel_width(area), pending);
-        draw_text_panel(buffer, area, PREVIEW_TITLE, &lines);
+        draw_rows_panel(buffer, area, PREVIEW_TITLE, &lines);
         if let Some(image) = &mut self.image {
             let text = text_panel_area(area);
             let used = u16::try_from(lines.len())
@@ -153,61 +155,88 @@ impl PreviewPane {
         }
     }
 
-    fn lines(&self, width: u16, pending: &str) -> Vec<(String, Color)> {
+    fn lines(&self, width: u16, pending: &str) -> Vec<Row> {
         if self.previewed.is_none() {
             return Vec::new();
         }
         match &self.preview {
             Some(found) => self.found_lines(found, width),
-            None => vec![(pending.to_owned(), MUTED)],
+            None => vec![row(pending.to_owned(), MUTED)],
         }
     }
 
-    fn found_lines(&self, found: &Preview, width: u16) -> Vec<(String, Color)> {
+    fn found_lines(&self, found: &Preview, width: u16) -> Vec<Row> {
         let failure = |message: String| {
             wrap(&format!("{FAILED_MARK} {message}"), width)
                 .into_iter()
-                .map(|line| (line, LOVE))
+                .map(|line| row(line, LOVE))
                 .collect()
         };
         match found {
-            Preview::Text(lines) if lines.is_empty() => vec![("empty file".to_owned(), MUTED)],
-            Preview::Text(lines) => lines.iter().map(|line| (line.clone(), TEXT)).collect(),
+            Preview::Text(lines) if lines.is_empty() => vec![row("empty file".to_owned(), MUTED)],
+            Preview::Text(lines) => lines.iter().map(|line| row(line.clone(), TEXT)).collect(),
+            Preview::Code(lines) => lines
+                .iter()
+                .map(|spans| {
+                    spans
+                        .iter()
+                        .map(|(text, token)| (text.clone(), colour(*token)))
+                        .collect()
+                })
+                .collect(),
             Preview::Binary(head) => hex_dump(head, width),
-            Preview::Image(picture) => vec![(caption(picture), MUTED)],
-            Preview::Rendered { kind, .. } => vec![(kind.caption().to_owned(), MUTED)],
+            Preview::Image(picture) => vec![row(caption(picture), MUTED)],
+            Preview::Rendered { kind, .. } => vec![row(kind.caption().to_owned(), MUTED)],
             Preview::Listing { archive, entries } if entries.is_empty() => {
-                vec![(format!("{}, empty", archive.caption()), MUTED)]
+                vec![row(format!("{}, empty", archive.caption()), MUTED)]
             }
             Preview::Listing { archive, entries } => {
-                std::iter::once((archive.caption().to_owned(), MUTED))
-                    .chain(entries.iter().map(|entry| (entry_line(entry), TEXT)))
+                std::iter::once(row(archive.caption().to_owned(), MUTED))
+                    .chain(entries.iter().map(|entry| row(entry_line(entry), TEXT)))
                     .collect()
             }
             Preview::Undecoded { reason, contents } => wrap(reason, width)
                 .into_iter()
-                .map(|line| (line, MUTED))
+                .map(|line| row(line, MUTED))
                 .chain(self.found_lines(contents, width))
                 .collect(),
             Preview::Directory(totals) => {
-                std::iter::once((self.directory_heading.to_owned(), MUTED))
+                std::iter::once(row(self.directory_heading.to_owned(), MUTED))
                     // A count cut to fit reads as a smaller one, so a part that does not fit whole is
                     // left out.
                     .chain(
                         totals_parts(totals)
                             .into_iter()
                             .filter(|part| cells(part) <= width)
-                            .map(|part| (part, TEXT)),
+                            .map(|part| row(part, TEXT)),
                     )
                     .collect()
             }
-            Preview::Symlink(target) => std::iter::once(("symlink to".to_owned(), MUTED))
-                .chain(wrap(target, width).into_iter().map(|line| (line, TEXT)))
+            Preview::Symlink(target) => std::iter::once(row("symlink to".to_owned(), MUTED))
+                .chain(wrap(target, width).into_iter().map(|line| row(line, TEXT)))
                 .collect(),
-            Preview::Special(kind) => vec![(format!("{kind}, never opened"), TEXT)],
+            Preview::Special(kind) => vec![row(format!("{kind}, never opened"), TEXT)],
             Preview::Refused(refusal) => failure(refusal.clone()),
             Preview::Unreadable(error) => failure(format!("cannot read: {error}")),
         }
+    }
+}
+
+fn row(text: String, color: Color) -> Row {
+    vec![(text, color)]
+}
+
+/// The Rose Pine colour of a token, as its own themes give it.
+fn colour(token: Token) -> Color {
+    match token {
+        Token::Plain => TEXT,
+        Token::Comment => MUTED,
+        Token::Keyword => PINE,
+        Token::String => GOLD,
+        Token::Constant => IRIS,
+        Token::Function => ROSE,
+        Token::Type | Token::Key => FOAM,
+        Token::Punctuation => SUBTLE,
     }
 }
 
@@ -264,7 +293,7 @@ pub(crate) fn totals_parts(totals: &Totals) -> Vec<String> {
 
 /// The head of a binary file, as many bytes a line as the width holds, each line an offset, the
 /// bytes in hex, and the printable ones as text.
-fn hex_dump(head: &[u8], width: u16) -> Vec<(String, Color)> {
+fn hex_dump(head: &[u8], width: u16) -> Vec<Row> {
     let per_line =
         (width.saturating_sub(HEX_OVERHEAD) / HEX_CELLS_PER_BYTE).clamp(1, HEX_MOST_BYTES);
     head.chunks(usize::from(per_line))
@@ -283,7 +312,7 @@ fn hex_dump(head: &[u8], width: u16) -> Vec<(String, Color)> {
                 .collect();
             let offset = index * usize::from(per_line);
             let columns = usize::from(per_line) * 3 - 1;
-            (
+            row(
                 format!("{offset:04x}  {:<columns$}  {text}", hex.join(" ")),
                 TEXT,
             )

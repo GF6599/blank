@@ -16,6 +16,8 @@ use ratatui_image::picker::Picker;
 const GOLD: Color = Color::Rgb(0xf6, 0xc1, 0x77);
 const IRIS: Color = Color::Rgb(0xc4, 0xa7, 0xe7);
 const LOVE: Color = Color::Rgb(0xeb, 0x6f, 0x92);
+const PINE: Color = Color::Rgb(0x31, 0x74, 0x8f);
+const MUTED: Color = Color::Rgb(0x6e, 0x6a, 0x86);
 
 /// Two random passes and the zero pass, so the covers write three times what the files hold.
 const OPTIONS: Options = Options {
@@ -1359,4 +1361,39 @@ fn an_empty_archive_says_it_is_empty() {
     // Then:
     let pane = panel(&buffer, "preview").expect("a preview pane");
     assert_eq!(pane[0], "ZIP archive, empty");
+}
+
+/// A source file is drawn in the colours of its tokens.
+///
+/// Given: a selector on a directory that holds a Rust file with a comment, a keyword and a
+/// string.
+/// When: it is drawn with the cursor on the file.
+/// Then: the comment is muted, the keyword is pine, and the string is gold.
+///
+/// Why it matters: the highlight is what lets the operator read the head of a source file at a
+/// glance, and a token drawn in the wrong colour reads as another kind of token.
+#[test]
+fn a_source_file_is_drawn_in_the_colours_of_its_tokens() {
+    // Given:
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("main.rs"),
+        "// a note\nfn main() {\n    let s = \"gold text\";\n}\n",
+    )
+    .unwrap();
+    let mut selector = open(root.path());
+
+    // When:
+    let buffer = render(&mut selector, 100, 30);
+
+    // Then:
+    let colour = |text: &str| {
+        let (y, row) = row_of(&buffer, text);
+        let line: String = row.iter().collect();
+        let x = line[..line.find(text).unwrap()].chars().count();
+        buffer[(x as u16, y)].fg
+    };
+    assert_eq!(colour("a note"), MUTED);
+    assert_eq!(colour("fn main"), PINE);
+    assert_eq!(colour("gold text"), GOLD);
 }

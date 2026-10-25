@@ -1,6 +1,7 @@
 mod chrome;
 pub mod engine;
 pub mod guard;
+pub mod highlight;
 pub mod manifest;
 mod overwrite;
 pub mod pane;

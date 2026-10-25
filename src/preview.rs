@@ -9,6 +9,7 @@ use image::{DynamicImage, ImageDecoder, ImageError, ImageFormat, ImageReader, Li
 use rustix::fs::{FileType, Mode, OFlags, fstat};
 
 use crate::guard::Guard;
+use crate::highlight::{Spans, highlight};
 use crate::plan::{Plan, Statistics, short_size};
 use crate::render::{Archive, Entry, Kind, Renderer, entries};
 use crate::terminal::{escape, escape_path};
@@ -48,6 +49,8 @@ const TAB: &str = "    ";
 pub enum Preview {
     /// The first lines, escaped.
     Text(Vec<String>),
+    /// The first lines of a file whose extension names a grammar, highlighted and escaped.
+    Code(Vec<Spans>),
     Binary(Vec<u8>),
     Image(Picture),
     /// A kind of file that a tool outside blank drew as a picture.
@@ -172,7 +175,7 @@ fn read_file(
         Ok(format) if IMAGE_FORMATS.contains(&format) => Work::Decode(format),
         _ => match Kind::of(&head) {
             Some(kind) => Work::Tool(kind),
-            None => return Ok(Some(contents(head))),
+            None => return Ok(Some(contents(head, path))),
         },
     };
     if !settled(stop) {
@@ -197,7 +200,7 @@ fn read_file(
     };
     Ok(Some(drawn.unwrap_or_else(|reason| Preview::Undecoded {
         reason,
-        contents: Box::new(contents(head)),
+        contents: Box::new(contents(head, path)),
     })))
 }
 
@@ -302,8 +305,9 @@ fn open_regular(path: &Path) -> std::io::Result<(File, u64)> {
 }
 
 /// Text when the head is UTF-8 with no zero byte, allowing a character cut at the end of the
-/// read, and binary otherwise.
-fn contents(head: Vec<u8>) -> Preview {
+/// read, and binary otherwise. The text is highlighted when the extension of `path` names a
+/// grammar.
+fn contents(head: Vec<u8>, path: &Path) -> Preview {
     if head.contains(&0) {
         return Preview::Binary(head);
     }
@@ -314,6 +318,10 @@ fn contents(head: Vec<u8>) -> Preview {
         }
         Err(_) => return Preview::Binary(head),
     };
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    if let Some(lines) = extension.and_then(|extension| highlight(extension, text, TAB)) {
+        return Preview::Code(lines);
+    }
     let lines = text
         .lines()
         .map(|line| escape(&line.replace('\t', TAB)))

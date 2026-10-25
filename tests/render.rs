@@ -311,8 +311,8 @@ fn a_font_previews_as_a_sample_of_its_letters() {
 ///
 /// Given: a file of each kind, and a search path with no tools on it.
 /// When: each is previewed.
-/// Then: each previews as its contents, binary for all but the SVG, which is text, and the
-/// reason names its tool.
+/// Then: each previews as its contents, binary for all but the SVG, which is highlighted text,
+/// and the reason names its tool.
 ///
 /// Why it matters: every tool is optional, and an operator who sees only bytes needs to know
 /// what to install to see the picture or the entries.
@@ -350,7 +350,7 @@ fn a_kind_whose_tool_is_missing_falls_back_naming_the_tool() {
         assert!(reason.contains(tool), "{name}: {reason}");
         if name.ends_with(".svg") {
             assert!(
-                matches!(*contents, Preview::Text(_)),
+                matches!(*contents, Preview::Code(_)),
                 "{name}: {contents:?}"
             );
         } else {
