@@ -15,6 +15,13 @@ default:
 run *args:
     cargo run -- {{ args }}
 
+# Record doc/demo.gif from demo.tape
+[group('dev')]
+demo:
+    cargo build --locked --release
+    mkdir -p doc
+    vhs demo.tape
+
 # Format the sources
 [group('dev')]
 fmt:
