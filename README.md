@@ -99,19 +99,30 @@ the same review as a command line.
 ```
 
 The preview pane shows the entry under the cursor. A text file shows its first lines, a
-binary file shows a hex dump of its first bytes, a directory shows what marking it would
-destroy, and a symlink shows where it points. An image (PNG, JPEG, GIF, WebP, BMP or TIFF,
+source or data file shows them highlighted in the Rose Pine palette, a binary file shows a
+hex dump of its first bytes, a directory shows what marking it would destroy, and a symlink
+shows where it points. An image (PNG, JPEG, GIF, WebP, BMP or TIFF,
 told by its first bytes and not by its name) shows as the picture under a caption with its
 format and its size in pixels. The picture goes through the terminal's graphics protocol,
 kitty, iTerm2 or sixel, and through coloured half-blocks on a terminal with none.
 
-Some kinds need a tool outside blank to become a picture, and each tool is optional:
+The highlight follows the extension of the name, and covers the grammars that syntect
+bundles, such as Rust, Python, JavaScript, Go, C, shell, JSON, YAML and HTML. It has no
+grammar for TypeScript or TOML, so those files show as plain text. A highlighted line is
+escaped the same way as a plain one.
 
-| Kind | Tool | Picture |
+Some kinds need a tool outside blank to become a picture or a list, and each tool is
+optional:
+
+| Kind | Tool | Preview |
 | --- | --- | --- |
 | PDF | `pdftoppm` (Poppler) | The first page |
 | Video | `ffmpegthumbnailer` | One frame |
 | SVG, HEIC, font | `magick` (ImageMagick 7) | The drawing, the photo, or a sample of the letters |
+| ZIP, 7z, RAR, tar | `7zz` (7-Zip) | The entries, each with its size |
+
+A compressed stream such as `.tar.gz` holds one entry with no name until it is unpacked, so
+it shows its first bytes.
 
 Without the tool, the entry shows what it showed before, under a line that names the tool to
 install. A tool that runs longer than 5 seconds is stopped, and the pane says so.
@@ -345,13 +356,15 @@ These are properties of the current implementation. Each one is reproducible.
   typed after the screen opens, because the query keeps reading for it. Inside tmux the
   query also turns on `allow-passthrough` for the pane, so the images reach the outer
   terminal.
-- **A PDF, video, SVG, HEIC or font preview runs a tool on an untrusted file.** The tool is
-  outside blank's process and its bounds, and a flaw in it runs with your permissions. blank
-  starts it with an argument list and no shell, gives it the file it already opened as
-  standard input, so no name reaches the tool, and kills it and every process in its
-  process group after 5 seconds, on a cursor move, or when the screen closes. `magick` gets bounds on its
-  memory, its disk, and the size of an image, so an SVG that claims a huge canvas fails at
-  once. A policy lets `magick` use only the coders a preview needs, and no delegate
+- **A PDF, video, SVG, HEIC, font or archive preview runs a tool on an untrusted file.** The
+  tool is outside blank's process and its bounds, and a flaw in it runs with your
+  permissions. blank starts it with an argument list and no shell, gives it the file it
+  already opened as standard input, so no name reaches the tool, and kills it and every
+  process in its process group after 5 seconds, on a cursor move, or when the screen closes.
+  `7zz` gets a password so that it never asks for one, and the format that the first bytes
+  of the file name, so that it reads no other. blank reads at most 64 KiB of its listing,
+  and stops it there. `magick` gets bounds on its memory, its disk, and the size of an
+  image, so an SVG that claims a huge canvas fails at once. A policy lets `magick` use only the coders a preview needs, and no delegate
   program, so an SVG cannot reach a text, script or file-writing coder through a file planted
   beside it. An SVG can still draw a PNG or a JPEG that you can read, by its path.
   ImageMagick 7.1.2 also refuses an SVG reference to a URL. The tools write into a private
