@@ -8,6 +8,8 @@ one line per target.
 > **Destruction is permanent. `blank` has no undo and no trash can. Read "Known
 > limitations" before you point it at anything you care about.**
 
+![blank demo](doc/demo.gif)
+
 ## How it works
 
 `blank` reads the whole plan before it changes anything. It expands each argument into a
