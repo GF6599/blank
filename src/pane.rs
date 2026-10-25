@@ -254,11 +254,7 @@ fn entry_line(entry: &Entry) -> String {
         Some(size) if !entry.directory => short_size(size),
         _ => String::new(),
     };
-    let slash = if entry.directory && !entry.path.ends_with('/') {
-        "/"
-    } else {
-        ""
-    };
+    let slash = if entry.directory { "/" } else { "" };
     format!("{size:>ENTRY_SIZE_CELLS$}  {}{slash}", entry.path)
 }
 
